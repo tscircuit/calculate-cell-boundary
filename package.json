@@ -1,5 +1,5 @@
 {
-  "name": "calculate-cell-boundary",
+  "name": "calculate-cell-boundaries",
   "module": "index.ts",
   "type": "module",
   "private": true,
