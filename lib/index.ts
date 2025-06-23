@@ -258,6 +258,7 @@ export const calculateCellBoundaries = (
 ): Array<Line> => {
   const gap = opts?.gap ?? 0
   if (cellContents.length < 2) return []
+  const tol = gap > 0 ? 0.001 : 0
 
   // 1. Convert CellContent[] to InternalBox[]
   const internalBoxes: InternalBox[] = cellContents.map((c) => ({
@@ -277,16 +278,36 @@ export const calculateCellBoundaries = (
   const initial = [...baseSegments, ...bandSegments]
 
   // NEW – stretch verticals so they reach neighbouring horizontals
-  const stretched = extendVerticalSegments(initial, gap > 0 ? 0.001 : 0)
+  const stretched = extendVerticalSegments(initial, tol)
+
+  // If there are no horizontal segments, extend every vertical segment
+  // to the overall min / max Y of all boxes so they span the whole band.
+  let processed = stretched
+  const hasHorizontal = stretched.some(
+    (s) => Math.abs(s.y1 - s.y2) <= tol,
+  )
+  if (!hasHorizontal) {
+    const minY = Math.min(...internalBoxes.map((b) => b.y))
+    const maxY = Math.max(...internalBoxes.map((b) => b.bottom))
+    processed = stretched.map((s) =>
+      Math.abs(s.x1 - s.x2) <= tol
+        ? { ...s, y1: minY, y2: maxY }
+        : s,
+    )
+  }
 
   // Final merge – collapses overlaps that may have been created by stretching
-  const segments = mergeCollinear(stretched, gap > 0 ? 0.001 : 0)
+  const segments = mergeCollinear(processed, tol)
 
   // 3. Convert Segment[] to Line[]
   const lines: Line[] = segments.map((s) => ({
     start: { x: s.x1, y: s.y1 },
     end: { x: s.x2, y: s.y2 },
   }))
+
+  lines.sort((a, b) =>
+    JSON.stringify(a).localeCompare(JSON.stringify(b)),
+  )
 
   return lines
 }
