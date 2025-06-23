@@ -29,6 +29,10 @@ const App: React.FC = () => {
     offsetX: number
     offsetY: number
   } | null>(null)
+  const [mousePosition, setMousePosition] = useState<{
+    x: number
+    y: number
+  } | null>(null)
   const svgRef = useRef<SVGSVGElement>(null)
 
   useEffect(() => {
@@ -124,6 +128,23 @@ const App: React.FC = () => {
     }
   }, [draggingCell, handleMouseMove, handleMouseUp])
 
+  const handleSvgMouseMove = (event: React.MouseEvent<SVGSVGElement>) => {
+    if (svgRef.current) {
+      const svgRect = svgRef.current.getBoundingClientRect()
+      const xSvg = event.clientX - svgRect.left
+      const ySvg = event.clientY - svgRect.top // Raw SVG Y, 0 at top, increases downwards
+
+      setMousePosition({
+        x: Math.round(xSvg / GRID_SIZE) * GRID_SIZE,
+        y: Math.round(ySvg / GRID_SIZE) * GRID_SIZE,
+      })
+    }
+  }
+
+  const handleSvgMouseLeave = () => {
+    setMousePosition(null)
+  }
+
   const handleLoadSceneFromJson = () => {
     try {
       // This will trigger the first useEffect to parse and update cellContents
@@ -176,7 +197,14 @@ const App: React.FC = () => {
         gap: "20px",
       }}
     >
-      <svg ref={svgRef} width={SVG_WIDTH} height={SVG_HEIGHT}>
+      <div style={{ position: "relative", width: SVG_WIDTH, height: SVG_HEIGHT }}>
+        <svg
+          ref={svgRef}
+          width={SVG_WIDTH}
+          height={SVG_HEIGHT}
+        onMouseMove={handleSvgMouseMove}
+        onMouseLeave={handleSvgMouseLeave}
+      >
         {/* SVG transform for Cartesian coordinates (y-axis points up) */}
         <g transform={`translate(0, ${SVG_HEIGHT}) scale(1, -1)`}>
           {/* Grid Lines */}
@@ -240,8 +268,27 @@ const App: React.FC = () => {
               strokeWidth="2"
             />
           ))}
+
         </g>
       </svg>
+      {mousePosition && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: "5px",
+            right: "5px",
+            backgroundColor: "rgba(255, 255, 255, 0.8)",
+            padding: "2px 5px",
+            fontSize: "12px",
+            fontFamily: "sans-serif",
+            pointerEvents: "none", // Ensure it doesn't interfere with SVG mouse events
+            color: "black", // Explicitly set text color
+          }}
+        >
+          {`(${mousePosition.x}, ${SVG_HEIGHT - mousePosition.y})`}
+        </div>
+      )}
+    </div>
 
       <div className="json-io-container">
         <div className="json-io-column">
