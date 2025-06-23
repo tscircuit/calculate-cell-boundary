@@ -4,7 +4,9 @@
   "type": "module",
   "scripts": {
     "build:site": "bun build site/index.html --outdir site-build",
-    "start": "bun run site/index.html"
+    "start": "bun run site/index.html",
+    "format": "biome format --write .",
+    "format:check": "biome format ."
   },
   "dependencies": {
     "react": "^18.3.1",
