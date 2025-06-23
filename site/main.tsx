@@ -23,6 +23,9 @@ const App: React.FC = () => {
   )
   const [calculatedBoundaries, setCalculatedBoundaries] = useState<Line[]>([])
   const [boundariesJsonOutput, setBoundariesJsonOutput] = useState<string>("")
+  const [pastedBoundariesJsonInput, setPastedBoundariesJsonInput] =
+    useState<string>("")
+  const [pastedBoundaries, setPastedBoundaries] = useState<Line[]>([])
 
   const [draggingCell, setDraggingCell] = useState<{
     index: number
@@ -188,6 +191,45 @@ const App: React.FC = () => {
     }
   }
 
+  const handleLoadPastedBoundariesFromJson = () => {
+    if (pastedBoundariesJsonInput.trim() === "") {
+      setPastedBoundaries([])
+      return
+    }
+    try {
+      // IMPORTANT: Using eval can be a security risk if the input is from an untrusted source.
+      // Here, we assume the user is pasting their own, known object literals.
+      // Wrap with parentheses to ensure it's evaluated as an expression.
+      const parsedLines = eval(`(${pastedBoundariesJsonInput})`) // Attempt to parse using eval
+      if (
+        Array.isArray(parsedLines) &&
+        parsedLines.every(
+          (l: any) =>
+            typeof l.start === "object" &&
+            l.start !== null &&
+            typeof l.start.x === "number" &&
+            typeof l.start.y === "number" &&
+            typeof l.end === "object" &&
+            l.end !== null &&
+            typeof l.end.x === "number" &&
+            typeof l.end.y === "number",
+        )
+      ) {
+        setPastedBoundaries(parsedLines)
+      } else {
+        alert(
+          "Invalid Pasted Boundaries JSON structure. Expected an array of Line objects (e.g., [{ \"start\": { \"x\": 0, \"y\": 0 }, \"end\": { \"x\": 10, \"y\": 10 } }]).",
+        )
+        // Optionally clear or keep previous valid state:
+        // setPastedBoundaries([]);
+      }
+    } catch (error) {
+      alert("Error parsing Pasted Boundaries JSON: " + (error as Error).message)
+      // Optionally clear or keep previous valid state:
+      // setPastedBoundaries([]);
+    }
+  }
+
   return (
     <div
       style={{
@@ -269,6 +311,19 @@ const App: React.FC = () => {
             />
           ))}
 
+          {/* Pasted Boundaries */}
+          {pastedBoundaries.map((line, index) => (
+            <line
+              key={`pasted-boundary-${index}`}
+              x1={line.start.x}
+              y1={line.start.y}
+              x2={line.end.x}
+              y2={line.end.y}
+              stroke="red"
+              strokeWidth="2"
+              strokeDasharray="5,5" // Dashed red line
+            />
+          ))}
         </g>
       </svg>
       {mousePosition && (
@@ -317,6 +372,38 @@ const App: React.FC = () => {
             rows={10}
           />
         </div>
+      </div>
+
+      <div className="json-io-column" style={{ marginTop: "20px", width: "100%", maxWidth: "600px" }}>
+        <details>
+          <summary style={{ fontWeight: "bold", cursor: "pointer", userSelect: "none" }}>
+            Pasted Boundaries (JSON)
+          </summary>
+          <div style={{ marginTop: "10px" }}>
+            <label
+              htmlFor="pasted-boundaries-json"
+              style={{ display: "block", marginBottom: "5px" }}
+            >
+              Paste Line[] JSON here:
+            </label>
+            <textarea
+              id="pasted-boundaries-json"
+              value={pastedBoundariesJsonInput}
+              onChange={(e) => setPastedBoundariesJsonInput(e.target.value)}
+              rows={5}
+              placeholder='[{start:{x:10,y:10},end:{x:100,y:100}}, {start:{x:20,y:20},end:{x:120,y:120}}]'
+              style={{ width: "100%", boxSizing: "border-box", padding: "5px", border: "1px solid #ccc", fontFamily: "monospace", fontSize: "12px" }}
+            />
+            <button
+              onClick={handleLoadPastedBoundariesFromJson}
+              style={{ marginTop: "10px", padding: "8px 15px", backgroundColor: "#007bff", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" }}
+              onMouseOver={(e) => (e.currentTarget.style.backgroundColor = "#0056b3")}
+              onMouseOut={(e) => (e.currentTarget.style.backgroundColor = "#007bff")}
+            >
+              Load/Update Pasted Boundaries
+            </button>
+          </div>
+        </details>
       </div>
     </div>
   )

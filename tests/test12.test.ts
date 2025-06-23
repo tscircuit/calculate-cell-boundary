@@ -62,7 +62,27 @@ test("test12", () => {
         },
         end: {
           x: 325,
-          y: 200,
+          y: 225,
+        },
+      },
+      {
+        start: {
+          x: 187.5,
+          y: 225,
+        },
+        end: {
+          x: 187.5,
+          y: (200 + 175) / 2,
+        },
+      },
+      {
+        start: {
+          x: 25,
+          y: (200 + 175) / 2,
+        },
+        end: {
+          x: 187.5,
+          y: (200 + 175) / 2,
         },
       },
     ].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
