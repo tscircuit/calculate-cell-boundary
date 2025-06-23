@@ -219,31 +219,116 @@ function computeRowSegments(boxes: InternalBox[], gap = 0): Segment[] {
  */
 function extendVerticalSegments(
   segments: Segment[],
+  boxes: InternalBox[],
   tol = 0.001,
 ): Segment[] {
   const isVert = (s: Segment) => Math.abs(s.x1 - s.x2) <= tol
   const isHorz = (s: Segment) => Math.abs(s.y1 - s.y2) <= tol
 
   const horizontals = segments.filter(isHorz)
-  if (horizontals.length === 0) return segments
+
+  const minYAll = Math.min(...boxes.map((b) => b.y))
+  const maxYAll = Math.max(...boxes.map((b) => b.bottom))
 
   for (const v of segments.filter(isVert)) {
-    const x = v.x1                      // vertical → constant x
+    const x = v.x1
     let minY = Math.min(v.y1, v.y2)
     let maxY = Math.max(v.y1, v.y2)
 
+    let above = -Infinity
+    let below = Infinity
     for (const h of horizontals) {
-      // does the horizontal cover this x position?
       if (h.x1 - tol <= x && x <= h.x2 + tol) {
-        const y = h.y1                  // constant y for horizontals
-        if (y < minY) minY = y
-        if (y > maxY) maxY = y
+        const y = h.y1
+        if (y <= minY) above = Math.max(above, y)
+        if (y >= maxY) below = Math.min(below, y)
       }
     }
-    v.y1 = minY
-    v.y2 = maxY
+
+    if (above === -Infinity) above = minYAll
+    if (below === Infinity) below = maxYAll
+
+    v.y1 = above
+    v.y2 = below
   }
+
   return segments
+}
+
+function extendHorizontalSegments(
+  segments: Segment[],
+  boxes: InternalBox[],
+  tol = 0.001,
+): Segment[] {
+  const isVert = (s: Segment) => Math.abs(s.x1 - s.x2) <= tol
+  const isHorz = (s: Segment) => Math.abs(s.y1 - s.y2) <= tol
+
+  const verticals = segments.filter(isVert)
+  const horizontals = segments.filter(isHorz)
+
+  const minXAll = Math.min(...boxes.map((b) => b.x))
+  const maxXAll = Math.max(...boxes.map((b) => b.right))
+
+  const extended: Segment[] = []
+
+  for (const h of horizontals) {
+    const y = h.y1
+    let left = -Infinity
+    let right = Infinity
+    for (const v of verticals) {
+      if (v.y1 - tol <= y && y <= v.y2 + tol) {
+        if (v.x1 <= h.x1) left = Math.max(left, v.x1)
+        if (v.x1 >= h.x2) right = Math.min(right, v.x1)
+      }
+    }
+
+    const newX1 = left === -Infinity ? minXAll : left
+    const newX2 = right === Infinity ? maxXAll : right
+    extended.push({ x1: newX1, y1: y, x2: newX2, y2: y })
+  }
+
+  // Split extended horizontals at vertical intersections
+  const result: Segment[] = []
+  for (const h of extended) {
+    const cuts = verticals
+      .filter(
+        (v) =>
+          v.y1 - tol <= h.y1 &&
+          h.y1 <= v.y2 + tol &&
+          v.x1 > h.x1 + tol &&
+          v.x1 < h.x2 - tol,
+      )
+      .map((v) => v.x1)
+      .sort((a, b) => a - b)
+
+    if (cuts.length === 0) {
+      result.push(h)
+      continue
+    }
+
+    let start = h.x1
+    for (const c of cuts) {
+      result.push({ x1: start, y1: h.y1, x2: c, y2: h.y2 })
+      start = c
+    }
+    result.push({ x1: start, y1: h.y1, x2: h.x2, y2: h.y2 })
+  }
+  // If multiple horizontals share the same span, keep the one with the
+  // smallest Y (closer to the upper cells).  This avoids duplicates created
+  // by the row sweep and pair sweeps.
+  const grouped = new Map<string, Segment[]>()
+  for (const seg of result) {
+    const key = `${seg.x1.toFixed(3)},${seg.x2.toFixed(3)}`
+    ;(grouped.get(key) ?? grouped.set(key, []).get(key)!).push(seg)
+  }
+
+  const filtered: Segment[] = []
+  for (const segs of grouped.values()) {
+    segs.sort((a, b) => a.y1 - b.y1)
+    filtered.push(segs[0])
+  }
+
+  return [...verticals, ...filtered]
 }
 
 /**
@@ -278,21 +363,20 @@ export const calculateCellBoundaries = (
   const initial = [...baseSegments, ...bandSegments]
 
   // NEW – stretch verticals so they reach neighbouring horizontals
-  const stretched = extendVerticalSegments(initial, tol)
+  const stretched = extendVerticalSegments(initial, internalBoxes, tol)
+
+  // Expand horizontals to nearest verticals and split at intersections
+  const expanded = extendHorizontalSegments(stretched, internalBoxes, tol)
 
   // If there are no horizontal segments, extend every vertical segment
   // to the overall min / max Y of all boxes so they span the whole band.
-  let processed = stretched
-  const hasHorizontal = stretched.some(
-    (s) => Math.abs(s.y1 - s.y2) <= tol,
-  )
+  let processed = expanded
+  const hasHorizontal = expanded.some((s) => Math.abs(s.y1 - s.y2) <= tol)
   if (!hasHorizontal) {
     const minY = Math.min(...internalBoxes.map((b) => b.y))
     const maxY = Math.max(...internalBoxes.map((b) => b.bottom))
-    processed = stretched.map((s) =>
-      Math.abs(s.x1 - s.x2) <= tol
-        ? { ...s, y1: minY, y2: maxY }
-        : s,
+    processed = expanded.map((s) =>
+      Math.abs(s.x1 - s.x2) <= tol ? { ...s, y1: minY, y2: maxY } : s,
     )
   }
 
@@ -305,9 +389,7 @@ export const calculateCellBoundaries = (
     end: { x: s.x2, y: s.y2 },
   }))
 
-  lines.sort((a, b) =>
-    JSON.stringify(a).localeCompare(JSON.stringify(b)),
-  )
+  lines.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
 
   return lines
 }
