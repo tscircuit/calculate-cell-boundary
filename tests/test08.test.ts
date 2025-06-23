@@ -27,26 +27,28 @@ const scene = {
 test("test08", () => {
   const boundaries = calculateCellBoundaries(scene.cellContents)
 
-  expect(boundaries).toEqual([
-    {
-      start: {
-        x: 125,
-        y: 225,
+  expect(boundaries).toEqual(
+    [
+      {
+        start: {
+          x: 125,
+          y: 225,
+        },
+        end: {
+          x: 400,
+          y: 225,
+        },
       },
-      end: {
-        x: 400,
-        y: 225,
+      {
+        start: {
+          x: 262.5, // (225 + 300) / 2
+          y: 100,
+        },
+        end: {
+          x: 262.5, // (225 + 300) / 2
+          y: 225,
+        },
       },
-    },
-    {
-      start: {
-        x: (125 + 300) / 2,
-        y: 100,
-      },
-      end: {
-        x: (300 + 225) / 2,
-        y: 225,
-      },
-    },
-  ])
+    ].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+  )
 })

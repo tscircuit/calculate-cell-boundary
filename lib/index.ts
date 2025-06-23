@@ -118,8 +118,8 @@ function computeInnerLinesAlgorithm(boxes: InternalBox[], gap = 0): Segment[] {
             y2: bottom - gap,
           })
         }
+        break // only the nearest right neighbour matters (that overlaps in Y)
       }
-      break // only the nearest right neighbour matters
     }
   }
 
@@ -152,8 +152,8 @@ function computeInnerLinesAlgorithm(boxes: InternalBox[], gap = 0): Segment[] {
             y2: midY,
           })
         }
+        break // only the nearest bottom neighbour matters (that overlaps in X)
       }
-      break // only the nearest bottom neighbour matters
     }
   }
   return mergeCollinear([...vertical, ...horizontal], gap > 0 ? 0.001 : 0) // Use tolerance for gap, stricter if no gap
