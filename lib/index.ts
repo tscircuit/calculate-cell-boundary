@@ -213,6 +213,39 @@ function computeRowSegments(boxes: InternalBox[], gap = 0): Segment[] {
   return segments
 }
 
+/** Extend each vertical segment so it reaches any horizontal segment it
+ *  crosses (same x range).  This connects “row”-horizontals with the
+ *  verticals that sit under / above them.
+ */
+function extendVerticalSegments(
+  segments: Segment[],
+  tol = 0.001,
+): Segment[] {
+  const isVert = (s: Segment) => Math.abs(s.x1 - s.x2) <= tol
+  const isHorz = (s: Segment) => Math.abs(s.y1 - s.y2) <= tol
+
+  const horizontals = segments.filter(isHorz)
+  if (horizontals.length === 0) return segments
+
+  for (const v of segments.filter(isVert)) {
+    const x = v.x1                      // vertical → constant x
+    let minY = Math.min(v.y1, v.y2)
+    let maxY = Math.max(v.y1, v.y2)
+
+    for (const h of horizontals) {
+      // does the horizontal cover this x position?
+      if (h.x1 - tol <= x && x <= h.x2 + tol) {
+        const y = h.y1                  // constant y for horizontals
+        if (y < minY) minY = y
+        if (y > maxY) maxY = y
+      }
+    }
+    v.y1 = minY
+    v.y2 = maxY
+  }
+  return segments
+}
+
 /**
  * Calculate the boundaries between the cells. Lines are drawn between (middle)
  * of cell content walls.
@@ -240,11 +273,14 @@ export const calculateCellBoundaries = (
   const baseSegments = computeInnerLinesAlgorithm(internalBoxes, gap)
   const bandSegments = computeRowSegments(internalBoxes, gap)
 
-  // Merge everything so duplicates/overlaps collapse into one segment
-  const segments = mergeCollinear(
-    [...baseSegments, ...bandSegments],
-    gap > 0 ? 0.001 : 0,
-  )
+  // Merge “inner” and “row” segments first
+  const initial = [...baseSegments, ...bandSegments]
+
+  // NEW – stretch verticals so they reach neighbouring horizontals
+  const stretched = extendVerticalSegments(initial, gap > 0 ? 0.001 : 0)
+
+  // Final merge – collapses overlaps that may have been created by stretching
+  const segments = mergeCollinear(stretched, gap > 0 ? 0.001 : 0)
 
   // 3. Convert Segment[] to Line[]
   const lines: Line[] = segments.map((s) => ({
