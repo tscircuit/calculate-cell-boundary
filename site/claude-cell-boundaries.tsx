@@ -240,6 +240,45 @@ const getAngle = (p1: Point, p2: Point): number => {
   return Math.atan2(p2.y - p1.y, p2.x - p1.x)
 }
 
+//
+// ── Rectangle helpers (edge-to-edge) ────────────────────────────
+const edgeToEdgeDistance = (a: CellContent, b: CellContent) => {
+  const dx = Math.max(a.x - (b.x + b.width), b.x - (a.x + a.width), 0)
+  const dy = Math.max(a.y - (b.y + b.height), b.y - (a.y + a.height), 0)
+  return Math.hypot(dx, dy)
+}
+
+const areAdjacent = (a: CellContent, b: CellContent, tol = 0.5) => {
+  const shareVertical =
+    (Math.abs(a.x + a.width - b.x) < tol ||
+      Math.abs(b.x + b.width - a.x) < tol) &&
+    !(a.y + a.height <= b.y || b.y + b.height <= a.y)
+
+  const shareHorizontal =
+    (Math.abs(a.y + a.height - b.y) < tol ||
+      Math.abs(b.y + b.height - a.y) < tol) &&
+    !(a.x + a.width <= b.x || b.x + b.width <= a.x)
+
+  return shareVertical || shareHorizontal
+}
+
+// Simple union-find for grouping rects
+class DSU {
+  parent: number[]
+  constructor(n: number) {
+    this.parent = Array.from({ length: n }, (_, i) => i)
+  }
+  find(i: number): number {
+    if (this.parent[i] !== i) this.parent[i] = this.find(this.parent[i])
+    return this.parent[i]
+  }
+  union(i: number, j: number) {
+    const pi = this.find(i)
+    const pj = this.find(j)
+    if (pi !== pj) this.parent[pj] = pi
+  }
+}
+
 export const calculateCellBoundaries = (
   inputCellContents: Omit<CellContent, "cellId">[],
   containerWidth: number = 800,
@@ -249,6 +288,8 @@ export const calculateCellBoundaries = (
   allSegments: Array<Line>
   validSegments: Array<Line>
   mergedRectGroups: CellContent[][]
+  cellRects: CellContent[]
+  gridRects: CellContent[]
   // polygons: Array<PolygonType>; // Removed
   // mergedPolygons: Array<PolygonType>; // Removed
 } => {
@@ -370,23 +411,104 @@ export const calculateCellBoundaries = (
     })
   })
 
-  // Step 5 & 6 (Polygon construction and merging) are removed as per request.
-  // The new logic for "merged rects" would go here or be called from here.
-  // For now, we return without these steps.
+  // ── NEW: build grid rectangles from VALID segments ───────────
+  // 1. Collect unique x positions of vertical segments + container edges
+  const verticalXs = new Set<number>([0, containerWidth])
+  // 2. Collect unique y positions of horizontal segments + container edges
+  const horizontalYs = new Set<number>([0, containerHeight])
 
-  // Placeholder for Merged Rects: Each cell is its own group.
-  // Later, actual merging logic will populate this based on rules like "at most 1 cell content per group".
-  const mergedRectGroups: CellContent[][] = cellContents.map((cc) => [cc])
+  validSegments.forEach((seg) => {
+    const isVertical = Math.abs(seg.start.x - seg.end.x) < 0.001
+    if (isVertical) {
+      verticalXs.add(seg.start.x)
+    } else {
+      horizontalYs.add(seg.start.y)
+    }
+  })
+
+  const xs = Array.from(verticalXs).sort((a, b) => a - b)
+  const ys = Array.from(horizontalYs).sort((a, b) => a - b)
+
+  // helper: axis-aligned rectangle overlap
+  const rectsOverlap = (a: CellContent, b: CellContent) =>
+    a.x < b.x + b.width &&
+    a.x + a.width > b.x &&
+    a.y < b.y + b.height &&
+    a.y + a.height > b.y
+
+  // 3. Build every cell in the grid; drop any that intersect an input cell
+  const gridRects: CellContent[] = []
+  let gridRectId = 0
+
+  for (let xi = 0; xi < xs.length - 1; xi++) {
+    const x0 = xs[xi]
+    const x1 = xs[xi + 1]
+    if (x1 - x0 <= 0) continue
+
+    for (let yi = 0; yi < ys.length - 1; yi++) {
+      const y0 = ys[yi]
+      const y1 = ys[yi + 1]
+      if (y1 - y0 <= 0) continue
+
+      const candidate: CellContent = {
+        cellId: `gridRect-${gridRectId++}`,
+        x: x0,
+        y: y0,
+        width: x1 - x0,
+        height: y1 - y0,
+      }
+
+      // skip if candidate overlaps any original cell
+      if (cellContents.some((c) => rectsOverlap(candidate, c))) continue
+
+      gridRects.push(candidate)
+    }
+  }
+
+  // ── Step 5: merge cells that are connected by an unobstructed midline ──
+  // Any pair of cells that shares at least one *valid* segment (segment
+  // produced from a midline that is not blocked by other cells) belongs to
+  // the same merged-rect group.  We collect those relations with a union-find.
+
+  const dsu = new DSU(cellContents.length)
+
+  // Helper: cellId → index
+  const cellIdToIndex = new Map<string, number>()
+  cellContents.forEach((cell, idx) => cellIdToIndex.set(cell.cellId, idx))
+
+  // Union the two cells that generated every valid segment
+  validSegments.forEach((seg) => {
+    const [idA, idB] = seg.fromCellIds ?? []
+    const idxA = cellIdToIndex.get(idA)
+    const idxB = cellIdToIndex.get(idB)
+    if (idxA !== undefined && idxB !== undefined) {
+      dsu.union(idxA, idxB)
+    }
+  })
+
+  // Build final groups
+  const groupMap = new Map<number, CellContent[]>()
+  cellContents.forEach((cell, idx) => {
+    const root = dsu.find(idx)
+    if (!groupMap.has(root)) groupMap.set(root, [])
+    groupMap.get(root)!.push(cell)
+  })
+
+  const mergedRectGroups = [...groupMap.values()]
 
   return {
     midlines,
     allSegments,
     validSegments,
     mergedRectGroups,
+    cellRects: cellContents,
+    gridRects,
     // polygons: [], // Removed
     // mergedPolygons: [], // Removed
   }
 }
+
+const RECT_STAGE_ID = "rects"            // new step-id for pre-merge rects
 
 const CellBoundariesVisualization = () => {
   const [cellContents, setCellContents] = useState([
@@ -453,6 +575,17 @@ const CellBoundariesVisualization = () => {
       }
     })
   }, [results.mergedRectGroups])
+
+  // Stage-5 rects = every rectangle cut out by the valid segments grid
+  const preMergeRects = useMemo(() => {
+    return results.gridRects.map((r, idx) => ({
+      x: r.x,
+      y: r.y,
+      width: r.width,
+      height: r.height,
+      colorIdx: idx,
+    }))
+  }, [results.gridRects])
 
   // Find max distance for color scaling
   const maxDistance = useMemo(() => {
@@ -583,7 +716,8 @@ const CellBoundariesVisualization = () => {
             <option value="validSegments">
               4. Valid Segments (No Cell Intersections)
             </option>
-            <option value="mergedRects">5. Merged Rects</option>
+            <option value={RECT_STAGE_ID}>5. Rects (pre-merge)</option>
+            <option value="mergedRects">6. Merged Rects</option>
             {/* <option value="final">5. Constructed Polygons</option> // Removed */}
             {/* <option value="merged">6. Merged Polygons</option> // Removed */}
           </select>
@@ -789,7 +923,25 @@ const CellBoundariesVisualization = () => {
             {/* Polygon rendering removed */}
           </svg>
 
-          {/* ❷ DISPLAY MERGED RECTS (IN STAGE 5) -------------------------------- */}
+          {/* ── NEW STAGE 5: SHOW EVERY RECT ───────────────────────────── */}
+          {showStep === RECT_STAGE_ID &&
+            preMergeRects.map((rect, idx) => {
+              const colorClass = colors[rect.colorIdx % colors.length]
+              return (
+                <div
+                  key={`pre-rect-${idx}`}
+                  className={`absolute ${colorClass} opacity-40 border-4 border-white rounded-lg pointer-events-none`}
+                  style={{
+                    left: `${rect.x}px`,
+                    top: `${rect.y}px`,
+                    width: `${rect.width}px`,
+                    height: `${rect.height}px`,
+                  }}
+                />
+              )
+            })}
+
+          {/* ❷ DISPLAY MERGED RECTS (IN STAGE 6) -------------------------------- */}
           {showStep === "mergedRects" &&
             mergedRects.map((rect, groupIdx) => {
               const colorClass =
@@ -857,7 +1009,10 @@ const CellBoundariesVisualization = () => {
               <strong>Valid Segments:</strong> {results.validSegments.length}
             </div>
             <div>
-              <strong>Merged Rect Groups:</strong>{" "}
+              <strong>Pre-merge Rects (Stage 5):</strong> {results.gridRects.length}
+            </div>
+            <div>
+              <strong>Merged Rect Groups (Stage 6):</strong>{" "}
               {results.mergedRectGroups?.length || 0}
               <pre>{JSON.stringify(results.mergedRectGroups, null, 2)}</pre>
             </div>
@@ -875,8 +1030,10 @@ const CellBoundariesVisualization = () => {
                 "All segments created between midline intersections. Distance values show minimum distance from segment to any cell."}
               {showStep === "validSegments" &&
                 "Segments that don't intersect any cell content (invalid segments removed)."}
+              {showStep === RECT_STAGE_ID &&
+                "Stage 5: All individual rects prior to any merging. Each rect has its own colour."}
               {showStep === "mergedRects" &&
-                "Stage 5: Merged Rects. Displays groups of cells that are considered merged. Rects in the same group share a color. Currently, each cell forms its own group as a placeholder for more complex merging logic."}
+                "Stage 6: Merged Rects. Displays groups of cells that are considered merged. Rects in the same group share a color. Currently, each cell forms its own group as a placeholder for more complex merging logic."}
               {/* Polygon step descriptions removed */}
               {showDistanceDebug &&
                 (showStep === "allSegments" ||
