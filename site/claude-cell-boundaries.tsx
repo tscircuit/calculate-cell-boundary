@@ -310,6 +310,22 @@ export const calculateCellBoundaries = (
     });
   });
 
+  // Temporary boundary detection – used only for redundancy filtering
+  const isBoundarySegment = (segment: Line): boolean => {
+    const touchesLeft   = segment.start.x <= 0.1 || segment.end.x <= 0.1;
+    const touchesRight  = segment.start.x >= containerWidth  - 0.1 ||
+                          segment.end.x   >= containerWidth  - 0.1;
+    const touchesTop    = segment.start.y <= 0.1 || segment.end.y <= 0.1;
+    const touchesBottom = segment.start.y >= containerHeight - 0.1 ||
+                          segment.end.y   >= containerHeight - 0.1;
+    return touchesLeft || touchesRight || touchesTop || touchesBottom;
+  };
+
+  // We will only consider removing segments that are BOTH on the boundary
+  const boundarySegmentSet = new Set<string>(
+    validSegments.filter(isBoundarySegment).map(s => s.id)
+  );
+
   // ─── Step 5: remove redundant parallel segments that form an empty rectangle ──
   const isHorizontal = (s: Line) => Math.abs(s.start.y - s.end.y) < 0.001;
   const isVertical   = (s: Line) => Math.abs(s.start.x - s.end.x) < 0.001;
@@ -335,6 +351,10 @@ export const calculateCellBoundaries = (
       for (let j = i + 1; j < group.length; j++) {
         const top    = group[i];
         const bottom = group[j];
+        // Only remove if BOTH segments are boundary segments
+        if (!(boundarySegmentSet.has(top.id) && boundarySegmentSet.has(bottom.id))) {
+          continue;
+        }
 
         // rectangle between the two horizontal lines
         const rect = {
@@ -380,6 +400,9 @@ export const calculateCellBoundaries = (
       for (let j = i + 1; j < group.length; j++) {
         const left  = group[i];
         const right = group[j];
+        if (!(boundarySegmentSet.has(left.id) && boundarySegmentSet.has(right.id))) {
+          continue;
+        }
 
         const rect = {
           x: left.start.x,
