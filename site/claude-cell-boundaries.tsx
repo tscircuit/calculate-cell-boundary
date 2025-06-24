@@ -470,8 +470,8 @@ const CellBoundariesVisualization = () => {
     return calculateCellBoundaries(cellContents);
   }, [cellContents]);
 
-  // Find segments that are connection points between paths
-  const connectionSegments = useMemo(() => {
+  // Find segments that are connection points between paths (reused segments)
+  const reusedSegments = useMemo(() => {
     const segmentUsage = new Map<string, number>();
     results.paths.forEach(path => {
       path.forEach(segment => {
