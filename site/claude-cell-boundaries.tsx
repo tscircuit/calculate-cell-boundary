@@ -189,7 +189,6 @@ export const calculateCellBoundaries = (
   allSegments: Array<Line>;
   validSegments: Array<Line>;
   boundarySegments: Array<Line>;
-  remainingBoundarySegments: Array<Line>;
   paths: Array<Array<Line>>;
   cellBoundaries: Array<Line>;
 } => {
@@ -322,49 +321,21 @@ export const calculateCellBoundaries = (
     return touchesLeft || touchesRight || touchesTop || touchesBottom;
   });
 
-  // Step 6: Eliminate segments that don't have highest distanceToAnyCell among same fromCellIds
-  const remainingBoundarySegments = [...boundarySegments];
-  const groupedByFromCells = remainingBoundarySegments.reduce((acc, segment) => {
-    const key = segment.fromCellIds?.sort().join(',') || '';
-    if (!acc[key]) acc[key] = [];
-    acc[key].push(segment);
-    return acc;
-  }, {} as Record<string, Line[]>);
-
-  Object.values(groupedByFromCells).forEach(group => {
-    if (group.length > 1) {
-      const maxDistance = Math.max(...group.map(s => s.distanceToAnyCell || 0));
-      group.forEach(segment => {
-        if ((segment.distanceToAnyCell || 0) < maxDistance) {
-          const index = remainingBoundarySegments.indexOf(segment);
-          if (index > -1) remainingBoundarySegments.splice(index, 1);
-        }
-      });
-    }
-  });
-
   // Step 7 & 8: Build paths using greedy search (UPDATED to stop when hitting previously used segments)
+  // Note: Step 6 (filtering boundary segments) has been removed.
   const paths: Array<Array<Line>> = [];
   const globalUsedStartSegments = new Set<string>(); // Track which boundary segments have been used as starting points
   const globalUsedSegments = new Set<string>(); // Track ALL segments that have been used in any path
   const boundarySegmentIds = new Set(boundarySegments.map(s => s.id)); // IDs of all boundary segments
   const endedAtBoundarySegmentIds = new Set<string>(); // IDs of boundary segments that terminated a path
-
-  // Create a set of boundary segment IDs that were filtered out
-  const filteredOutBoundarySegmentIds = new Set<string>();
-  boundarySegments.forEach(seg => {
-    if (!remainingBoundarySegments.find(remaining => remaining.id === seg.id)) {
-      filteredOutBoundarySegmentIds.add(seg.id);
-    }
-  });
   
-  // Valid segments that can be used in paths (excluding filtered boundary segments)
-  const pathUsableSegments = validSegments.filter(seg => !filteredOutBoundarySegmentIds.has(seg.id));
+  // All valid segments can be used in paths
+  const pathUsableSegments = [...validSegments];
 
   while (true) {
-    // Find segment with highest distanceToAnyCell that hasn't been used as a starting point
+    // Find segment with highest distanceToAnyCell from boundarySegments that hasn't been used as a starting point
     // and hasn't terminated a previous path.
-    const availableStarts = remainingBoundarySegments.filter(
+    const availableStarts = boundarySegments.filter(
       s => !globalUsedStartSegments.has(s.id) && !endedAtBoundarySegmentIds.has(s.id)
     );
 
@@ -467,7 +438,6 @@ export const calculateCellBoundaries = (
     allSegments,
     validSegments,
     boundarySegments,
-    remainingBoundarySegments,
     paths,
     cellBoundaries
   };
@@ -616,9 +586,8 @@ const CellBoundariesVisualization = () => {
             <option value="allSegments">3. All Segments</option>
             <option value="validSegments">4. Valid Segments (No Cell Intersections)</option>
             <option value="boundarySegments">5. Boundary Segments (Touch Global Boundary)</option>
-            <option value="remainingBoundary">6. Remaining Boundary Segments (After Distance Filter)</option>
-            <option value="paths">7. Paths (Segments Can Be Reused)</option>
-            <option value="final">8. Final Cell Boundaries</option>
+            <option value="paths">6. Paths (Segments Can Be Reused)</option>
+            <option value="final">7. Final Cell Boundaries</option>
           </select>
         </div>
         
@@ -804,7 +773,6 @@ const CellBoundariesVisualization = () => {
             {showStep === 'boundarySegments' && results.boundarySegments.map(segment => {
               const closestInfo = showDistanceDebug ? 
                 findClosestPointOnSegmentToAnyCells(segment.start, segment.end, cellContents) : null;
-              const willBeFiltered = !results.remainingBoundarySegments.find(s => s.id === segment.id);
               
               return (
                 <g key={segment.id}>
@@ -813,16 +781,15 @@ const CellBoundariesVisualization = () => {
                     y1={segment.start.y}
                     x2={segment.end.x}
                     y2={segment.end.y}
-                    stroke={willBeFiltered ? "#9ca3af" : "#10b981"}
+                    stroke={"#10b981"}
                     strokeWidth="2"
-                    opacity={willBeFiltered ? "0.4" : "0.8"}
-                    strokeDasharray={willBeFiltered ? "3,3" : "none"}
+                    opacity={"0.8"}
                   />
                   <text
                     x={(segment.start.x + segment.end.x) / 2}
                     y={(segment.start.y + segment.end.y) / 2 - 5}
                     fontSize="10"
-                    fill={willBeFiltered ? "#9ca3af" : "#000"}
+                    fill={"#000"}
                     textAnchor="middle"
                     fontWeight="bold"
                   >
@@ -843,31 +810,6 @@ const CellBoundariesVisualization = () => {
                 </g>
               );
             })}
-
-            {/* Remaining Boundary Segments */}
-            {showStep === 'remainingBoundary' && results.remainingBoundarySegments.map(segment => (
-              <g key={segment.id}>
-                <line
-                  x1={segment.start.x}
-                  y1={segment.start.y}
-                  x2={segment.end.x}
-                  y2={segment.end.y}
-                  stroke="#8b5cf6"
-                  strokeWidth="3"
-                  opacity="0.8"
-                />
-                <text
-                  x={(segment.start.x + segment.end.x) / 2}
-                  y={(segment.start.y + segment.end.y) / 2 - 5}
-                  fontSize="10"
-                  fill="#000"
-                  textAnchor="middle"
-                  fontWeight="bold"
-                >
-                  {segment.distanceToAnyCell?.toFixed(1)}
-                </text>
-              </g>
-            ))}
 
             {/* Paths */}
             {showStep === 'paths' && results.paths.map((path, pathIndex) => {
@@ -1012,10 +954,6 @@ const CellBoundariesVisualization = () => {
               <strong>Boundary Segments:</strong> {results.boundarySegments.length}
             </div>
             <div>
-              <strong>Remaining After Filter:</strong> {results.remainingBoundarySegments.length}
-              <span className="text-gray-500"> ({results.boundarySegments.length - results.remainingBoundarySegments.length} filtered)</span>
-            </div>
-            <div>
               <strong>Paths:</strong> {results.paths.length}
             </div>
             <div>
@@ -1035,12 +973,11 @@ const CellBoundariesVisualization = () => {
               {showStep === 'midlines' && "Midlines drawn between all cell pairs with gaps, extending to container bounds."}
               {showStep === 'allSegments' && "All segments created between midline intersections. Distance values show minimum distance from segment to any cell."}
               {showStep === 'validSegments' && "Segments that don't intersect any cell content (invalid segments removed)."}
-              {showStep === 'boundarySegments' && "Valid segments that touch the global boundary (container edges). Gray dashed segments will be filtered out in the next step."}
-              {showStep === 'remainingBoundary' && "Boundary segments after filtering by highest distance to cells. Only segments with the maximum distance among those sharing the same fromCellIds are kept."}
+              {showStep === 'boundarySegments' && "Valid segments that touch the global boundary (container edges). All these segments are candidates for starting paths."}
               {showStep === 'paths' && (
                 <>
                   Connected paths built using greedy search. <strong>Key behaviors:</strong> 
-                  <br/>• Paths start from remaining boundary segments (highest distance first)
+                  <br/>• Paths start from boundary segments (highest distance first)
                   <br/>• At each step, selects the connected segment with highest distance
                   <br/>• <strong>Paths end when they contact any previously traversed segment</strong>
                   <br/>• Segments cannot be reused within the same path (no backtracking)
