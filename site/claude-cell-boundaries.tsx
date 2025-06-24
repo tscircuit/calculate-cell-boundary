@@ -465,6 +465,7 @@ const CellBoundariesVisualization = () => {
   const [showDistanceDebug, setShowDistanceDebug] = useState(false);
   const [showFilteredSegments, setShowFilteredSegments] = useState(false);
   const [colorByDistance, setColorByDistance] = useState(false);
+  const [hiddenPathIndices, setHiddenPathIndices] = useState<Set<number>>(new Set());
 
   const results = useMemo(() => {
     return calculateCellBoundaries(cellContents);
@@ -789,6 +790,8 @@ const CellBoundariesVisualization = () => {
 
             {/* Paths */}
             {showStep === 'paths' && results.paths.map((path, pathIndex) => {
+              if (hiddenPathIndices.has(pathIndex)) return null;
+
               const pathColors = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#06b6d4', '#ec4899', '#84cc16'];
               const pathColor = pathColors[pathIndex % pathColors.length];
               
@@ -995,18 +998,34 @@ const CellBoundariesVisualization = () => {
                   const pathColors = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#06b6d4', '#ec4899', '#84cc16'];
                   const pathColor = pathColors[index % pathColors.length];
                   const avgDistance = path.reduce((sum, seg) => sum + (seg.distanceToAnyCell || 0), 0) / path.length;
+                  const isHidden = hiddenPathIndices.has(index);
+
+                  const togglePathVisibility = () => {
+                    setHiddenPathIndices(prev => {
+                      const newSet = new Set(prev);
+                      if (newSet.has(index)) {
+                        newSet.delete(index);
+                      } else {
+                        newSet.add(index);
+                      }
+                      return newSet;
+                    });
+                  };
+
                   return (
-                    <div key={index} className="text-gray-600">
+                    <div key={index} className={`text-gray-600 ${isHidden ? 'opacity-50' : ''}`}>
                       <div className="flex items-center gap-2">
-                        <div 
-                          className="w-4 h-4 rounded"
+                        <div
+                          className="w-4 h-4 rounded cursor-pointer"
                           style={{ backgroundColor: pathColor }}
+                          onClick={togglePathVisibility}
+                          title={isHidden ? "Show path" : "Hide path"}
                         />
                         <span className="font-medium">Path {index + 1}:</span> {path.length} segments
                       </div>
                       <div className="ml-6 text-xs text-gray-500">
                         Avg distance: {avgDistance.toFixed(1)}
-                        {showDistanceDebug && (
+                        {showDistanceDebug && !isHidden && (
                           <div>Distances: {path.map(s => s.distanceToAnyCell?.toFixed(1)).join(' → ')}</div>
                         )}
                       </div>
