@@ -814,7 +814,7 @@ const CellBoundariesVisualization = () => {
   // const [hiddenPathIndices, setHiddenPathIndices] = useState<Set<number>>(new Set()); // Removed as it was likely for polygons
 
   const results = useMemo(() => {
-    return calculateCellBoundaries(cellContents)
+    return calculateCellBoundaries(cellContents, 800, 600)
   }, [cellContents])
 
   const cellToGroupColorMap = useMemo(() => {

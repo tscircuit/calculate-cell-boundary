@@ -19,7 +19,7 @@ const scene = {
 }
 
 test("test01", () => {
-  const { cellBoundaries } = calculateCellBoundaries(scene.cellContents)
+  const cellBoundaries = calculateCellBoundaries(scene.cellContents)
 
   expect(cellBoundaries).toEqual([
     {
