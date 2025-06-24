@@ -452,17 +452,30 @@ export const calculateCellBoundaries = (
 
   cellContents.forEach((cell, idx) => {
     // left / right grid lines that bound the cell
-    const left = xs.filter((v) => v <= cell.x).pop()!
-    const right = xs.find((v) => v >= cell.x + cell.width)!
-    const top = ys.filter((v) => v <= cell.y).pop()!
-    const bot = ys.find((v) => v >= cell.y + cell.height)!
+    // xs and ys are sorted and include 0 and containerWidth/Height respectively.
+    const minXGrid = xs[0]; 
+    const maxXGrid = xs[xs.length - 1];
+    const minYGrid = ys[0];
+    const maxYGrid = ys[ys.length - 1];
+
+    let left = xs.filter((v) => v <= cell.x).pop();
+    if (left === undefined) left = minXGrid;
+
+    let right = xs.find((v) => v >= cell.x + cell.width);
+    if (right === undefined) right = maxXGrid;
+
+    let top = ys.filter((v) => v <= cell.y).pop();
+    if (top === undefined) top = minYGrid;
+
+    let bot = ys.find((v) => v >= cell.y + cell.height);
+    if (bot === undefined) bot = maxYGrid;
 
     const rect: CellContent = {
       cellId: `contain-${cell.cellId}`,
       x: left,
       y: top,
-      width: right - left,
-      height: bot - top,
+      width: Math.max(0, right - left),
+      height: Math.max(0, bot - top),
     }
     cellContainingRectMap.set(cell.cellId, rect)
     cellContainingRects.push(rect)
