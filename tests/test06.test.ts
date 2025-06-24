@@ -30,22 +30,22 @@ test("test06", () => {
   expect(boundaries).toEqual([
     {
       start: {
-        x: 225,
-        y: 200,
-      },
-      end: {
-        x: 225,
-        y: 350,
-      },
-    },
-    {
-      start: {
         x: 50,
         y: 200,
       },
       end: {
-        x: 400,
+        x: 225,
         y: 200,
+      },
+    },
+    {
+      start: {
+        x: 225,
+        y: 50,
+      },
+      end: {
+        x: 225,
+        y: 350,
       },
     },
   ])

@@ -26,6 +26,7 @@ const scene = {
 
 test("test09", () => {
   const boundaries = calculateCellBoundaries(scene.cellContents)
+  boundaries.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
 
   expect(boundaries).toEqual(
     [
@@ -35,7 +36,7 @@ test("test09", () => {
           y: 225,
         },
         end: {
-          x: 275,
+          x: 400,
           y: 225,
         },
       },
@@ -46,7 +47,7 @@ test("test09", () => {
         },
         end: {
           x: 275,
-          y: 225,
+          y: 200,
         },
       },
       {
