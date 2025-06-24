@@ -311,22 +311,31 @@ export const calculateCellBoundaries = (
   // polygons: Array<PolygonType>; // Removed
   // mergedPolygons: Array<PolygonType>; // Removed
 } => {
-  const cellContents = inputCellContents.map((cellContent, index) => ({
+  const originalCellContents = inputCellContents.map((cellContent, index) => ({
     ...cellContent,
     cellId: `cell-${index}`,
   }))
+
   const containerBounds = computeBoundsFromCellContents(
-    cellContents.map((c) => ({
+    originalCellContents.map((c) => ({
       minX: c.x,
       minY: c.y,
       maxX: c.x + c.width,
       maxY: c.y + c.height,
     })),
   )
-  // TODO handle container offset
-  containerWidth ??= containerBounds.maxX // - containerBounds.minX
-  containerHeight ??= containerBounds.maxY // - containerBounds.minY
-  console.log({ containerWidth, containerHeight })
+
+  const offsetX = containerBounds.minX
+  const offsetY = containerBounds.minY
+
+  containerWidth ??= containerBounds.maxX - containerBounds.minX
+  containerHeight ??= containerBounds.maxY - containerBounds.minY
+
+  const cellContents = originalCellContents.map((c) => ({
+    ...c,
+    x: c.x - offsetX,
+    y: c.y - offsetY,
+  }))
 
   // Step 1: Calculate midlines between all cells
   const midlines: Midline[] = []
@@ -772,14 +781,31 @@ export const calculateCellBoundaries = (
     })
   })
 
+  const offsetPoint = (p: Point): Point => ({
+    x: p.x + offsetX,
+    y: p.y + offsetY,
+  })
+
+  const offsetLine = (l: Line): Line => ({
+    ...l,
+    start: offsetPoint(l.start),
+    end: offsetPoint(l.end),
+  })
+
+  const offsetRect = (r: CellContent): CellContent => ({
+    ...r,
+    x: r.x + offsetX,
+    y: r.y + offsetY,
+  })
+
   return {
-    midlines,
-    allSegments,
-    validSegments,
-    mergedRectGroups,
-    cellRects: cellContents,
-    gridRects,
-    outlineLines,
+    midlines: midlines.map(offsetLine),
+    allSegments: allSegments.map(offsetLine),
+    validSegments: validSegments.map(offsetLine),
+    mergedRectGroups: mergedRectGroups.map((g) => g.map(offsetRect)),
+    cellRects: cellContents.map(offsetRect),
+    gridRects: gridRects.map(offsetRect),
+    outlineLines: outlineLines.map(offsetLine),
     // polygons: [], // Removed
     // mergedPolygons: [], // Removed
   }
