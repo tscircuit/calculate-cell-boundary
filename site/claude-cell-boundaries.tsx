@@ -585,111 +585,108 @@ const calculateMergedPolygons = (
   sourceSegments: Line[], // Segments with distanceToAnyCell info
   cellContents: CellContent[]
 ): PolygonType[] => {
-  let currentPolygons = initialPolygons.map((poly, index) => ({ id: `poly-${index}`, points: poly }));
+  let mergedPolygonIdCounter = 0;
+  let currentPolygonObjects = initialPolygons.map((poly, index) => ({ 
+    id: `poly-init-${index}`, 
+    points: poly 
+  }));
 
-  // Create a map of all source segments for quick lookup of distanceToAnyCell
   const sourceSegmentMap = new Map<string, Line>();
   sourceSegments.forEach(seg => {
     sourceSegmentMap.set(getCanonicalSegmentKey(seg.start, seg.end), seg);
   });
 
-  // Identify shared internal segments and sort them
-  const sharedSegmentsToConsider: { segment: Line, polyIds: [string, string] }[] = [];
-  const segmentToPolygonsMap = new Map<string, { segmentLine: Line, polygonIds: string[] }>();
+  let mergedInLastPass: boolean;
+  do {
+    mergedInLastPass = false;
+    
+    const segmentToPolygonMap = new Map<string, { segmentLine: Line, polygons: Array<typeof currentPolygonObjects[0]> }>();
+    currentPolygonObjects.forEach(polyObj => {
+      const polygonEdges = getPolygonSegments(polyObj.points);
+      polygonEdges.forEach(edge => {
+        const canonicalKey = getCanonicalSegmentKey(edge.start, edge.end);
+        const originalSegmentData = sourceSegmentMap.get(canonicalKey);
+        
+        // Only original segments (which have distanceToAnyCell) can be candidates for removal.
+        // Edges of merged polygons that were not original segments are fixed.
+        if (!originalSegmentData) {
+            return;
+        }
 
-  currentPolygons.forEach(poly => {
-    const polygonSegments = getPolygonSegments(poly.points);
-    polygonSegments.forEach(seg => {
-      const canonicalKey = getCanonicalSegmentKey(seg.start, seg.end);
-      const originalSegment = sourceSegmentMap.get(canonicalKey);
-      if (!originalSegment) {
-        // This might be a segment from a previously merged polygon, or an issue.
-        // For now, we only consider segments that were in the original set.
-        // console.warn("Segment not found in source map:", canonicalKey);
-        return; 
-      }
-
-      if (!segmentToPolygonsMap.has(canonicalKey)) {
-        segmentToPolygonsMap.set(canonicalKey, { segmentLine: originalSegment, polygonIds: [] });
-      }
-      segmentToPolygonsMap.get(canonicalKey)!.polygonIds.push(poly.id);
+        if (!segmentToPolygonMap.has(canonicalKey)) {
+          segmentToPolygonMap.set(canonicalKey, { segmentLine: originalSegmentData, polygons: [] });
+        }
+        segmentToPolygonMap.get(canonicalKey)!.polygons.push(polyObj);
+      });
     });
-  });
 
-  segmentToPolygonsMap.forEach(({ segmentLine, polygonIds }) => {
-    if (polygonIds.length === 2) { // Shared by exactly two polygons
-      // Ensure it's not a boundary segment (distanceToAnyCell > 0 or not on container edge)
-      // For simplicity, we rely on distanceToAnyCell. Boundary segments from closure have 0.
-      // If a validSegment happens to have distance 0 and is internal, it could be merged.
-      // This seems fine by the rule "lowest distanceToAnyCell".
-      sharedSegmentsToConsider.push({ segment: segmentLine, polyIds: [polygonIds[0], polygonIds[1]] });
-    }
-  });
-
-  sharedSegmentsToConsider.sort((a, b) => (a.segment.distanceToAnyCell || 0) - (b.segment.distanceToAnyCell || 0));
-
-  for (const { segment: sharedSeg, polyIds } of sharedSegmentsToConsider) {
-    const poly1Obj = currentPolygons.find(p => p.id === polyIds[0]);
-    const poly2Obj = currentPolygons.find(p => p.id === polyIds[1]);
-
-    if (!poly1Obj || !poly2Obj) continue; // One or both polygons already merged
-
-    const poly1 = poly1Obj.points;
-    const poly2 = poly2Obj.points;
-
-    // Attempt to merge poly1 and poly2 by removing sharedSeg
-    const s1 = sharedSeg.start;
-    const s2 = sharedSeg.end;
-
-    const findPath = (polygon: Point[], startNode: Point, endNode: Point): Point[] | null => {
-      const startIndex = polygon.findIndex(p => pointsEqual(p, startNode));
-      if (startIndex === -1) return null;
-      
-      const path: Point[] = [];
-      let currentIndex = startIndex;
-      for (let i = 0; i < polygon.length; i++) {
-          path.push(polygon[currentIndex]);
-          if (pointsEqual(polygon[currentIndex], endNode)) break;
-          currentIndex = (currentIndex + 1) % polygon.length;
+    const candidateMerges: Array<{ segment: Line, poly1: typeof currentPolygonObjects[0], poly2: typeof currentPolygonObjects[0] }> = [];
+    segmentToPolygonMap.forEach(({ segmentLine, polygons }) => {
+      if (polygons.length === 2) { // Segment shared by exactly two current polygons
+        candidateMerges.push({ segment: segmentLine, poly1: polygons[0], poly2: polygons[1] });
       }
-      // Ensure endNode was actually reached and forms a path
-      if (!pointsEqual(path[path.length-1], endNode)) return null; 
-      return path;
-    };
-    
-    // Path from poly1, s1 -> ... -> s2 (this is the shared segment part)
-    // Path from poly2, s2 -> ... -> s1 (this is the shared segment part in other poly)
+    });
 
-    // We need the parts *not* including the shared segment.
-    // In poly1: path from s2 -> ... -> s1
-    // In poly2: path from s1 -> ... -> s2
-    
-    let path1 = findPath(poly1, s2, s1); // Path in poly1 from s2 around to s1
-    let path2 = findPath(poly2, s1, s2); // Path in poly2 from s1 around to s2
+    candidateMerges.sort((a, b) => (a.segment.distanceToAnyCell || 0) - (b.segment.distanceToAnyCell || 0));
 
-    if (!path1 || !path2) continue; // Should not happen if logic is correct
+    for (const { segment: sharedSeg, poly1: poly1ObjToMerge, poly2: poly2ObjToMerge } of candidateMerges) {
+      const p1CurrentInstance = currentPolygonObjects.find(p => p.id === poly1ObjToMerge.id);
+      const p2CurrentInstance = currentPolygonObjects.find(p => p.id === poly2ObjToMerge.id);
 
-    // The merged polygon points are s1, (points from path2 excluding s1 and s2), s2, (points from path1 excluding s2 and s1)
-    // More simply: path2 (which is s1...s2) followed by path1 (s2...s1) excluding duplicate s2 and s1.
-    const mergedPoints: Point[] = [];
-    path2.forEach(p => mergedPoints.push(p)); // Adds s1...s2 from poly2
-    // Add points from path1, skipping the first (s2, already added) and last (s1, will close loop)
-    for (let i = 1; i < path1.length -1; i++) {
-        mergedPoints.push(path1[i]);
+      if (!p1CurrentInstance || !p2CurrentInstance) {
+        continue; // One or both polygons already merged/removed in this pass via a different segment
+      }
+
+      const poly1Points = p1CurrentInstance.points;
+      const poly2Points = p2CurrentInstance.points;
+      
+      const s1 = sharedSeg.start;
+      const s2 = sharedSeg.end;
+
+      const findPath = (polygon: Point[], startNode: Point, endNode: Point): Point[] | null => {
+        const startIndex = polygon.findIndex(p => pointsEqual(p, startNode));
+        if (startIndex === -1) return null;
+        
+        const path: Point[] = [];
+        let currentIndex = startIndex;
+        for (let i = 0; i < polygon.length; i++) {
+            path.push(polygon[currentIndex]);
+            if (pointsEqual(polygon[currentIndex], endNode)) break;
+            currentIndex = (currentIndex + 1) % polygon.length;
+        }
+        if (!pointsEqual(path[path.length-1], endNode)) return null; 
+        return path;
+      };
+      
+      let path1Outer = findPath(poly1Points, s2, s1); // Path in poly1 from s2 around to s1 (excluding sharedSeg)
+      let path2Outer = findPath(poly2Points, s1, s2); // Path in poly2 from s1 around to s2 (excluding sharedSeg)
+
+      if (!path1Outer || !path2Outer) continue; 
+
+      const mergedPolygonPoints: Point[] = [];
+      path2Outer.forEach(p => mergedPolygonPoints.push(p)); // Adds s1...s2 from poly2
+      for (let i = 1; i < path1Outer.length - 1; i++) { // Add points from poly1, skipping first (s2) and last (s1)
+          mergedPolygonPoints.push(path1Outer[i]);
+      }
+      
+      if (mergedPolygonPoints.length < 3) continue;
+
+      const numCellsInMerged = countCellsInPolygon(mergedPolygonPoints, cellContents);
+
+      if (numCellsInMerged <= 1) {
+        const newMergedPolyId = `merged-${mergedPolygonIdCounter++}`;
+        const newPolygonObject = { id: newMergedPolyId, points: mergedPolygonPoints };
+        
+        currentPolygonObjects = currentPolygonObjects.filter(p => p.id !== p1CurrentInstance.id && p.id !== p2CurrentInstance.id);
+        currentPolygonObjects.push(newPolygonObject);
+        
+        mergedInLastPass = true;
+        break; // Restart the pass: re-calculate shared segments, re-sort, re-iterate
+      }
     }
-    
-    if (mergedPoints.length < 3) continue; // Not a valid polygon
+  } while (mergedInLastPass);
 
-    const numCells = countCellsInPolygon(mergedPoints, cellContents);
-
-    if (numCells <= 1) {
-      // Merge is valid
-      const newPolyId = `${poly1Obj.id}-${poly2Obj.id}-merged`;
-      currentPolygons = currentPolygons.filter(p => p.id !== poly1Obj.id && p.id !== poly2Obj.id);
-      currentPolygons.push({ id: newPolyId, points: mergedPoints });
-    }
-  }
-  return currentPolygons.map(p => p.points);
+  return currentPolygonObjects.map(p => p.points);
 };
 
 
