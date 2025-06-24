@@ -310,8 +310,107 @@ export const calculateCellBoundaries = (
     });
   });
 
-  // Step 5: Determine boundary segments (segments that intersect global boundary)
-  const boundarySegments = validSegments.filter(segment => {
+  // ─── Step 5: remove redundant parallel segments that form an empty rectangle ──
+  const isHorizontal = (s: Line) => Math.abs(s.start.y - s.end.y) < 0.001;
+  const isVertical   = (s: Line) => Math.abs(s.start.x - s.end.x) < 0.001;
+
+  const toRemove = new Set<string>();
+
+  const groupKey = (a: number, b: number) =>
+    `${Math.min(a, b).toFixed(3)}-${Math.max(a, b).toFixed(3)}`;
+
+  /* ----- group + check horizontal segments ----- */
+  const horizGroups = new Map<string, Line[]>();
+  validSegments.forEach(s => {
+    if (!isHorizontal(s)) return;
+    const key = groupKey(s.start.x, s.end.x);
+    (horizGroups.get(key) ?? horizGroups.set(key, []).get(key)!).push(s);
+  });
+
+  horizGroups.forEach(group => {
+    if (group.length < 2) return;
+    group.sort((a, b) => a.start.y - b.start.y);
+
+    for (let i = 0; i < group.length - 1; i++) {
+      for (let j = i + 1; j < group.length; j++) {
+        const top    = group[i];
+        const bottom = group[j];
+
+        // rectangle between the two horizontal lines
+        const rect = {
+          x: Math.min(top.start.x, top.end.x),
+          y: top.start.y,
+          width: Math.abs(top.end.x - top.start.x),
+          height: bottom.start.y - top.start.y,
+        };
+
+        // any cell touching that rectangle?
+        const containsCell = cellContents.some(c =>
+          !(c.x + c.width <= rect.x ||
+            c.x >= rect.x + rect.width ||
+            c.y + c.height <= rect.y ||
+            c.y >= rect.y + rect.height)
+        );
+
+        if (!containsCell) {
+          const keep =
+            (top.distanceToAnyCell ?? 0) >= (bottom.distanceToAnyCell ?? 0)
+              ? top
+              : bottom;
+          const drop = keep === top ? bottom : top;
+          toRemove.add(drop.id);
+        }
+      }
+    }
+  });
+
+  /* ----- group + check vertical segments (analogous) ----- */
+  const vertGroups = new Map<string, Line[]>();
+  validSegments.forEach(s => {
+    if (!isVertical(s)) return;
+    const key = groupKey(s.start.y, s.end.y);
+    (vertGroups.get(key) ?? vertGroups.set(key, []).get(key)!).push(s);
+  });
+
+  vertGroups.forEach(group => {
+    if (group.length < 2) return;
+    group.sort((a, b) => a.start.x - b.start.x);
+
+    for (let i = 0; i < group.length - 1; i++) {
+      for (let j = i + 1; j < group.length; j++) {
+        const left  = group[i];
+        const right = group[j];
+
+        const rect = {
+          x: left.start.x,
+          y: Math.min(left.start.y, left.end.y),
+          width: right.start.x - left.start.x,
+          height: Math.abs(left.end.y - left.start.y),
+        };
+
+        const containsCell = cellContents.some(c =>
+          !(c.x + c.width <= rect.x ||
+            c.x >= rect.x + rect.width ||
+            c.y + c.height <= rect.y ||
+            c.y >= rect.y + rect.height)
+        );
+
+        if (!containsCell) {
+          const keep =
+            (left.distanceToAnyCell ?? 0) >= (right.distanceToAnyCell ?? 0)
+              ? left
+              : right;
+          const drop = keep === left ? right : left;
+          toRemove.add(drop.id);
+        }
+      }
+    }
+  });
+
+  const nonRedundantSegments = validSegments.filter(s => !toRemove.has(s.id));
+
+  // Step 6: Determine boundary segments (segments that intersect global boundary)
+  const boundarySegments = nonRedundantSegments.filter(segment => {
     // Check if segment intersects any of the container boundaries
     const touchesLeft = segment.start.x <= 0.1 || segment.end.x <= 0.1;
     const touchesRight = segment.start.x >= containerWidth - 0.1 || segment.end.x >= containerWidth - 0.1;
@@ -329,8 +428,8 @@ export const calculateCellBoundaries = (
   const boundarySegmentIds = new Set(boundarySegments.map(s => s.id)); // IDs of all boundary segments
   const endedAtBoundarySegmentIds = new Set<string>(); // IDs of boundary segments that terminated a path
   
-  // All valid segments can be used in paths
-  const pathUsableSegments = [...validSegments];
+  // All non-redundant segments can be used in paths
+  const pathUsableSegments = [...nonRedundantSegments];
 
   while (true) {
     // Find segment with highest distanceToAnyCell from boundarySegments that hasn't been used as a starting point
@@ -437,6 +536,7 @@ export const calculateCellBoundaries = (
     midlines,
     allSegments,
     validSegments,
+    nonRedundantSegments, // NEW stage after validSegments
     boundarySegments,
     paths,
     cellBoundaries
