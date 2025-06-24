@@ -499,24 +499,64 @@ export const calculateCellBoundaries = (
 
   // ── Step 5: merge GRID rects outward from each cell ───────────────
   // One cell ⇒ one merged-rect group.  Start with the rect that
-  // contains the cell, then pull in adjacent rects in order of
-  // edge-to-edge distance until every rect is assigned.
+  // contains the cell. Then, iteratively merge adjacent grid rects based on the
+  // minimum distanceToAnyCell of their bounding segments.
 
-  // Working copy of every grid rect with merge flags
-  const workRects = gridRects.map((r) => ({
-    ...r,
-    merged: false as boolean,
-    groupId: null as number | null,
-  }))
+  interface WorkRect extends CellContent {
+    merged: boolean
+    groupId: number | null
+    minBoundingSegmentDistance: number
+  }
 
-  // 5-a  mark the “key rects” (the cell-containing rects) as the seeds
+  // Working copy of every grid rect with merge flags and distance metric
+  const workRects: WorkRect[] = gridRects.map((r) => {
+    let minDistanceForRect = Infinity
+    const { x, y, width, height } = r
+
+    validSegments.forEach(segment => {
+      const sx1 = Math.min(segment.start.x, segment.end.x)
+      const sx2 = Math.max(segment.start.x, segment.end.x)
+      const sy1 = Math.min(segment.start.y, segment.end.y)
+      const sy2 = Math.max(segment.start.y, segment.end.y)
+
+      const segmentIsHorizontal = Math.abs(segment.start.y - segment.end.y) < POINT_COMPARISON_TOLERANCE
+      const segmentIsVertical = Math.abs(segment.start.x - segment.end.x) < POINT_COMPARISON_TOLERANCE
+
+      let onBoundary = false
+      if (segmentIsHorizontal) {
+        if ( (Math.abs(sy1 - y) < POINT_COMPARISON_TOLERANCE || Math.abs(sy1 - (y + height)) < POINT_COMPARISON_TOLERANCE) &&
+             sx1 < x + width - POINT_COMPARISON_TOLERANCE && sx2 > x + POINT_COMPARISON_TOLERANCE && // ensure segment x-range overlaps rect x-range with positive length
+             Math.max(sx1, x) + POINT_COMPARISON_TOLERANCE < Math.min(sx2, x + width) ) {
+          onBoundary = true
+        }
+      } else if (segmentIsVertical) {
+        if ( (Math.abs(sx1 - x) < POINT_COMPARISON_TOLERANCE || Math.abs(sx1 - (x + width)) < POINT_COMPARISON_TOLERANCE) &&
+             sy1 < y + height - POINT_COMPARISON_TOLERANCE && sy2 > y + POINT_COMPARISON_TOLERANCE && // ensure segment y-range overlaps rect y-range with positive length
+             Math.max(sy1, y) + POINT_COMPARISON_TOLERANCE < Math.min(sy2, y + height) ) {
+          onBoundary = true
+        }
+      }
+
+      if (onBoundary && segment.distanceToAnyCell !== undefined) {
+        minDistanceForRect = Math.min(minDistanceForRect, segment.distanceToAnyCell)
+      }
+    })
+
+    return {
+      ...r,
+      merged: false,
+      groupId: null,
+      minBoundingSegmentDistance: minDistanceForRect,
+    }
+  })
+
+  // 5-a Mark the “key rects” (the cell-containing rects) as the seeds
   cellContainingRects.forEach((contRect, idx) => {
     const wr = workRects.find(
       (w) =>
-        w.x === contRect.x &&
-        w.y === contRect.y &&
-        w.width === contRect.width &&
-        w.height === contRect.height,
+        pointsEqual({x: w.x, y: w.y}, {x: contRect.x, y: contRect.y}) &&
+        Math.abs(w.width - contRect.width) < POINT_COMPARISON_TOLERANCE &&
+        Math.abs(w.height - contRect.height) < POINT_COMPARISON_TOLERANCE,
     )
     if (wr) {
       wr.merged = true
@@ -524,50 +564,74 @@ export const calculateCellBoundaries = (
     }
   })
 
-  // 5-b  prepare list of unmerged rects sorted by distance to NEAREST key-rect
-  type DistRec = { id: string; dist: number }
-  const unmergedDistances: DistRec[] = workRects
+  // 5-b Iterative grow-out: assign each rect to an adjacent merged group,
+  // prioritizing rects with lower minBoundingSegmentDistance.
+  // Skipped rects are re-evaluated in subsequent passes.
+  let unmergedRectsProcessingList: WorkRect[] = workRects
     .filter((r) => !r.merged)
-    .map((r) => ({
-      id: r.cellId,
-      dist: Math.min(
-        ...cellContainingRects.map((keyR) => edgeToEdgeDistance(r, keyR)),
-      ),
-    }))
-    .sort((a, b) => a.dist - b.dist)
+    .sort((a, b) => a.minBoundingSegmentDistance - b.minBoundingSegmentDistance)
 
-  // 5-c  iterative grow-out: assign each rect to the first adjacent merged group
-  unmergedDistances.forEach(({ id }) => {
-    const rect = workRects.find((r) => r.cellId === id)!
-    const neighbours = workRects.filter(
-      (other) => other.merged && areAdjacent(rect, other),
-    )
-    if (neighbours.length) {
-      rect.merged = true
-      if (neighbours.length === 1) {
-        rect.groupId = neighbours[0].groupId
-      } else {
-        let bestGroupId = null
-        let minDistance = Infinity
-        for (const neighbour of neighbours) {
-          if (neighbour.groupId === null) continue // Should not happen for merged rects
+  let keepProcessing = true
+  while (keepProcessing && unmergedRectsProcessingList.length > 0) {
+    keepProcessing = false // Assume no merges in this pass initially
+    const remainingAfterPass: WorkRect[] = []
 
-          // Get the original cell associated with this neighbour's group
-          const originalCellForNeighbourGroup = cellContents[neighbour.groupId]
-          const distance = edgeToEdgeDistance(
-            rect,
-            originalCellForNeighbourGroup,
-          )
-
-          if (distance < minDistance) {
-            minDistance = distance
-            bestGroupId = neighbour.groupId
-          }
+    for (const rectToConsider of unmergedRectsProcessingList) {
+      // Find the current state of this rect from the main workRects array
+      const currentRectState = workRects.find(wr => wr.cellId === rectToConsider.cellId)
+      
+      // If rect somehow already processed or not found, skip
+      if (!currentRectState || currentRectState.merged) {
+        if (currentRectState && currentRectState.merged && !keepProcessing) {
+            // If it got merged by another rect earlier in this same pass, ensure keepProcessing is true
+            // This can happen if rect A merges, then rect B (neighbour of A) is processed.
+            // However, the main check for keepProcessing is if a rect *changes* its state to merged.
         }
-        rect.groupId = bestGroupId
+        continue;
+      }
+
+      const neighbours = workRects.filter(
+        (other) => other.merged && areAdjacent(currentRectState, other),
+      )
+
+      if (neighbours.length > 0) {
+        currentRectState.merged = true
+        keepProcessing = true // A merge occurred, so at least one more pass might be needed
+
+        if (neighbours.length === 1) {
+          currentRectState.groupId = neighbours[0].groupId
+        } else {
+          // Tie-breaking: find best group to join based on distance to original cell
+          let bestGroupId = null
+          let minDistanceToOriginalCell = Infinity
+          for (const neighbour of neighbours) {
+            if (neighbour.groupId === null) continue 
+
+            const originalCellForGroup = cellContents[neighbour.groupId]
+            const distance = edgeToEdgeDistance(currentRectState, originalCellForGroup)
+
+            if (distance < minDistanceToOriginalCell) {
+              minDistanceToOriginalCell = distance
+              bestGroupId = neighbour.groupId
+            } else if (distance === minDistanceToOriginalCell) {
+              // Further tie-breaking: prefer smaller group ID (arbitrary but consistent)
+              if (bestGroupId === null || (neighbour.groupId !== null && neighbour.groupId < bestGroupId)) {
+                bestGroupId = neighbour.groupId
+              }
+            }
+          }
+          currentRectState.groupId = bestGroupId
+        }
+      } else {
+        // Cannot merge this rect in this pass, add to list for next pass
+        remainingAfterPass.push(rectToConsider)
       }
     }
-  })
+    // Prepare for next pass with only rects that couldn't be merged, re-sorted
+    unmergedRectsProcessingList = remainingAfterPass.sort(
+      (a, b) => a.minBoundingSegmentDistance - b.minBoundingSegmentDistance,
+    )
+  }
 
   // 5-d  collect final groups – first element MUST be the cell-containing rect,
   //      followed by the original cell rect and the rest of the merged grid rects
