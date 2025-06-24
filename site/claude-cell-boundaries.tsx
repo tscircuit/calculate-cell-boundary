@@ -1,6 +1,8 @@
 import React, { useState, useMemo } from 'react';
 
 // Type definitions
+interface PolygonType extends Array<Point> {}
+
 interface CellContent {
   cellId: string;
   x: number;
@@ -38,7 +40,9 @@ interface Intersection {
 // Utility functions
 const snapToGrid = (value: number, gridSize: number = 25) => Math.round(value / gridSize) * gridSize;
 
-const pointsEqual = (p1: Point, p2: Point, tolerance: number = 0.1): boolean => {
+const POINT_COMPARISON_TOLERANCE = 0.001; // Used for comparing float coordinates
+
+const pointsEqual = (p1: Point, p2: Point, tolerance: number = POINT_COMPARISON_TOLERANCE): boolean => {
   return Math.abs(p1.x - p2.x) < tolerance && Math.abs(p1.y - p2.y) < tolerance;
 };
 
@@ -180,6 +184,103 @@ const findClosestPointOnSegmentToAnyCells = (start: Point, end: Point, cells: Ce
   return globalClosest;
 };
 
+// Helper function to convert a Point to a string key
+// Precision should be related to POINT_COMPARISON_TOLERANCE
+const pointToKey = (p: Point): string => `${p.x.toFixed(4)},${p.y.toFixed(4)}`; 
+
+const getAngle = (p1: Point, p2: Point): number => {
+  return Math.atan2(p2.y - p1.y, p2.x - p1.x);
+};
+
+// Helper function: Check if a point is inside a polygon (ray casting algorithm)
+const isPointInPolygon = (point: Point, polygon: Point[]): boolean => {
+  let intersections = 0;
+  const n = polygon.length;
+  for (let i = 0; i < n; i++) {
+    const p1 = polygon[i];
+    const p2 = polygon[(i + 1) % n];
+
+    if (p1.y === p2.y) continue; // Skip horizontal segments
+    if (point.y < Math.min(p1.y, p2.y)) continue; // Point below segment
+    if (point.y >= Math.max(p1.y, p2.y)) continue; // Point above segment
+
+    // Calculate x-intersection of ray from point
+    const xIntersection = (point.y - p1.y) * (p2.x - p1.x) / (p2.y - p1.y) + p1.x;
+    if (xIntersection > point.x) { // Point is to the left of intersection
+      intersections++;
+    }
+  }
+  return intersections % 2 === 1;
+};
+
+// Helper function: Find a path between two points using BFS
+const findPathBetweenPoints = (startPoint: Point, endPoint: Point, segments: Line[]): Point[] | null => {
+  const adj = new Map<string, Point[]>();
+  const allPoints = new Map<string, Point>();
+
+  const addPoint = (p: Point) => {
+    const key = pointToKey(p);
+    if (!allPoints.has(key)) {
+      allPoints.set(key, p);
+      adj.set(key, []);
+    }
+    return key;
+  };
+
+  segments.forEach(segment => {
+    const keyStart = addPoint(segment.start);
+    const keyEnd = addPoint(segment.end);
+    adj.get(keyStart)!.push(segment.end);
+    adj.get(keyEnd)!.push(segment.start);
+  });
+
+  const startKey = pointToKey(startPoint);
+  const endKey = pointToKey(endPoint);
+
+  if (!allPoints.has(startKey) || !allPoints.has(endKey)) {
+    return null; // Start or end point not in segments
+  }
+
+  const queue: Point[][] = [[startPoint]];
+  const visited = new Set<string>([startKey]);
+
+  while (queue.length > 0) {
+    const currentPath = queue.shift()!;
+    const lastPointInPath = currentPath[currentPath.length - 1];
+    const lastPointKey = pointToKey(lastPointInPath);
+
+    if (pointsEqual(lastPointInPath, endPoint)) {
+      return currentPath; // Path found
+    }
+
+    const neighbors = adj.get(lastPointKey) || [];
+    for (const neighbor of neighbors) {
+      const neighborKey = pointToKey(neighbor);
+      if (!visited.has(neighborKey)) {
+        visited.add(neighborKey);
+        const newPath = [...currentPath, neighbor];
+        queue.push(newPath);
+      }
+    }
+  }
+  return null; // Path not found
+};
+
+// Helper function: Count cells inside a polygon
+const countCellsInPolygon = (polygon: Point[], cells: CellContent[]): number => {
+  let count = 0;
+  cells.forEach(cell => {
+    const cellCenter = {
+      x: cell.x + cell.width / 2,
+      y: cell.y + cell.height / 2,
+    };
+    if (isPointInPolygon(cellCenter, polygon)) {
+      count++;
+    }
+  });
+  return count;
+};
+
 export const calculateCellBoundaries = (
   inputCellContents: Omit<CellContent, "cellId">[],
   containerWidth: number = 800,
@@ -188,9 +289,7 @@ export const calculateCellBoundaries = (
   midlines: Midline[];
   allSegments: Array<Line>;
   validSegments: Array<Line>;
-  boundarySegments: Array<Line>;
-  paths: Array<Array<Line>>;
-  cellBoundaries: Array<Line>;
+  polygons: Array<PolygonType>;
 } => {
   const cellContents = inputCellContents.map((cellContent, index) => ({
     ...cellContent,
@@ -310,259 +409,157 @@ export const calculateCellBoundaries = (
     });
   });
 
-  // Temporary boundary detection – used only for redundancy filtering
-  const isBoundarySegment = (segment: Line): boolean => {
-    const touchesLeft   = segment.start.x <= 0.1 || segment.end.x <= 0.1;
-    const touchesRight  = segment.start.x >= containerWidth  - 0.1 ||
-                          segment.end.x   >= containerWidth  - 0.1;
-    const touchesTop    = segment.start.y <= 0.1 || segment.end.y <= 0.1;
-    const touchesBottom = segment.start.y >= containerHeight - 0.1 ||
-                          segment.end.y   >= containerHeight - 0.1;
-    return touchesLeft || touchesRight || touchesTop || touchesBottom;
+  // Step 5: Construct Polygons from validSegments and container boundaries
+  const polygons: PolygonType[] = [];
+  let boundarySegmentIdCounter = 0;
+
+  // 5.1: Augment with Boundary Segments
+  const boundaryClosureSegments: Line[] = [];
+  const containerCorners = {
+    TL: { x: 0, y: 0 },
+    TR: { x: containerWidth, y: 0 },
+    BR: { x: containerWidth, y: containerHeight },
+    BL: { x: 0, y: containerHeight },
   };
 
-  // We will only consider removing segments that are BOTH on the boundary
-  const boundarySegmentSet = new Set<string>(
-    validSegments.filter(isBoundarySegment).map(s => s.id)
-  );
+  const addBoundarySegmentsForEdge = (
+    edgePoints: Point[],
+    fixedCoord: 'x' | 'y',
+    fixedValue: number,
+    sortCoord: 'x' | 'y'
+  ) => {
+    const uniquePoints = Array.from(new Map(edgePoints.map(p => [pointToKey(p), p])).values())
+      .sort((a, b) => a[sortCoord] - b[sortCoord]);
 
-  // ─── Step 5: remove redundant parallel segments that form an empty rectangle ──
-  const isHorizontal = (s: Line) => Math.abs(s.start.y - s.end.y) < 0.001;
-  const isVertical   = (s: Line) => Math.abs(s.start.x - s.end.x) < 0.001;
-
-  const toRemove = new Set<string>();
-
-  const groupKey = (a: number, b: number) =>
-    `${Math.min(a, b).toFixed(3)}-${Math.max(a, b).toFixed(3)}`;
-
-  /* ----- group + check horizontal segments ----- */
-  const horizGroups = new Map<string, Line[]>();
-  validSegments.forEach(s => {
-    if (!isHorizontal(s)) return;
-    const key = groupKey(s.start.x, s.end.x);
-    (horizGroups.get(key) ?? horizGroups.set(key, []).get(key)!).push(s);
-  });
-
-  horizGroups.forEach(group => {
-    if (group.length < 2) return;
-    group.sort((a, b) => a.start.y - b.start.y);
-
-    for (let i = 0; i < group.length - 1; i++) {
-      for (let j = i + 1; j < group.length; j++) {
-        const top    = group[i];
-        const bottom = group[j];
-        // Only remove if BOTH segments are boundary segments
-        if (!(boundarySegmentSet.has(top.id) && boundarySegmentSet.has(bottom.id))) {
-          continue;
-        }
-
-        // rectangle between the two horizontal lines
-        const rect = {
-          x: Math.min(top.start.x, top.end.x),
-          y: top.start.y,
-          width: Math.abs(top.end.x - top.start.x),
-          height: bottom.start.y - top.start.y,
-        };
-
-        // any cell touching that rectangle?
-        const containsCell = cellContents.some(c =>
-          !(c.x + c.width <= rect.x ||
-            c.x >= rect.x + rect.width ||
-            c.y + c.height <= rect.y ||
-            c.y >= rect.y + rect.height)
-        );
-
-        if (!containsCell) {
-          const keep =
-            (top.distanceToAnyCell ?? 0) >= (bottom.distanceToAnyCell ?? 0)
-              ? top
-              : bottom;
-          const drop = keep === top ? bottom : top;
-          toRemove.add(drop.id);
-        }
+    for (let i = 0; i < uniquePoints.length - 1; i++) {
+      const p1 = uniquePoints[i];
+      const p2 = uniquePoints[i + 1];
+      // Ensure segment has length
+      if (!pointsEqual(p1, p2)) {
+        boundaryClosureSegments.push({
+          id: `boundary-${boundarySegmentIdCounter++}`,
+          start: p1,
+          end: p2,
+          distanceToAnyCell: 0, // Boundary segments are on the edge
+        });
       }
     }
-  });
+  };
 
-  /* ----- group + check vertical segments (analogous) ----- */
-  const vertGroups = new Map<string, Line[]>();
-  validSegments.forEach(s => {
-    if (!isVertical(s)) return;
-    const key = groupKey(s.start.y, s.end.y);
-    (vertGroups.get(key) ?? vertGroups.set(key, []).get(key)!).push(s);
-  });
+  const pointsOnTop = validSegments.flatMap(s => [s.start, s.end]).filter(p => Math.abs(p.y - 0) < POINT_COMPARISON_TOLERANCE);
+  pointsOnTop.push(containerCorners.TL, containerCorners.TR);
+  addBoundarySegmentsForEdge(pointsOnTop, 'y', 0, 'x');
 
-  vertGroups.forEach(group => {
-    if (group.length < 2) return;
-    group.sort((a, b) => a.start.x - b.start.x);
-
-    for (let i = 0; i < group.length - 1; i++) {
-      for (let j = i + 1; j < group.length; j++) {
-        const left  = group[i];
-        const right = group[j];
-        if (!(boundarySegmentSet.has(left.id) && boundarySegmentSet.has(right.id))) {
-          continue;
-        }
-
-        const rect = {
-          x: left.start.x,
-          y: Math.min(left.start.y, left.end.y),
-          width: right.start.x - left.start.x,
-          height: Math.abs(left.end.y - left.start.y),
-        };
-
-        const containsCell = cellContents.some(c =>
-          !(c.x + c.width <= rect.x ||
-            c.x >= rect.x + rect.width ||
-            c.y + c.height <= rect.y ||
-            c.y >= rect.y + rect.height)
-        );
-
-        if (!containsCell) {
-          const keep =
-            (left.distanceToAnyCell ?? 0) >= (right.distanceToAnyCell ?? 0)
-              ? left
-              : right;
-          const drop = keep === left ? right : left;
-          toRemove.add(drop.id);
-        }
-      }
-    }
-  });
-
-  const nonRedundantSegments = validSegments.filter(s => !toRemove.has(s.id));
-
-  // Step 6: Determine boundary segments (segments that intersect global boundary)
-  const boundarySegments = nonRedundantSegments.filter(segment => {
-    // Check if segment intersects any of the container boundaries
-    const touchesLeft = segment.start.x <= 0.1 || segment.end.x <= 0.1;
-    const touchesRight = segment.start.x >= containerWidth - 0.1 || segment.end.x >= containerWidth - 0.1;
-    const touchesTop = segment.start.y <= 0.1 || segment.end.y <= 0.1;
-    const touchesBottom = segment.start.y >= containerHeight - 0.1 || segment.end.y >= containerHeight - 0.1;
-    
-    return touchesLeft || touchesRight || touchesTop || touchesBottom;
-  });
-
-  // Step 7 & 8: Build paths using greedy search (UPDATED to stop when hitting previously used segments)
-  // Note: Step 6 (filtering boundary segments) has been removed.
-  const paths: Array<Array<Line>> = [];
-  const globalUsedStartSegments = new Set<string>(); // Track which boundary segments have been used as starting points
-  const globalUsedSegments = new Set<string>(); // Track ALL segments that have been used in any path
-  const boundarySegmentIds = new Set(boundarySegments.map(s => s.id)); // IDs of all boundary segments
-  const endedAtBoundarySegmentIds = new Set<string>(); // IDs of boundary segments that terminated a path
+  const pointsOnBottom = validSegments.flatMap(s => [s.start, s.end]).filter(p => Math.abs(p.y - containerHeight) < POINT_COMPARISON_TOLERANCE);
+  pointsOnBottom.push(containerCorners.BL, containerCorners.BR);
+  addBoundarySegmentsForEdge(pointsOnBottom, 'y', containerHeight, 'x');
   
-  // All non-redundant segments can be used in paths
-  const pathUsableSegments = [...nonRedundantSegments];
+  const pointsOnLeft = validSegments.flatMap(s => [s.start, s.end]).filter(p => Math.abs(p.x - 0) < POINT_COMPARISON_TOLERANCE);
+  pointsOnLeft.push(containerCorners.TL, containerCorners.BL);
+  addBoundarySegmentsForEdge(pointsOnLeft, 'x', 0, 'y');
 
-  while (true) {
-    // Find segment with highest distanceToAnyCell from boundarySegments that hasn't been used as a starting point
-    // and hasn't terminated a previous path.
-    const availableStarts = boundarySegments.filter(
-      s => !globalUsedStartSegments.has(s.id) && !endedAtBoundarySegmentIds.has(s.id)
-    );
+  const pointsOnRight = validSegments.flatMap(s => [s.start, s.end]).filter(p => Math.abs(p.x - containerWidth) < POINT_COMPARISON_TOLERANCE);
+  pointsOnRight.push(containerCorners.TR, containerCorners.BR);
+  addBoundarySegmentsForEdge(pointsOnRight, 'x', containerWidth, 'y');
+  
+  const allSegmentsForCycles = [...validSegments, ...boundaryClosureSegments];
 
-    if (availableStarts.length === 0) {
-      break; // No more valid starting segments
-    }
+  // 5.2: Build Adjacency List with Angles
+  const adj = new Map<string, { toPoint: Point, segmentId: string, angle: number }[]>();
+  allSegmentsForCycles.forEach(seg => {
+    const keyStart = pointToKey(seg.start);
+    const keyEnd = pointToKey(seg.end);
 
-    let startSegment = availableStarts[0];
-    let maxStartDistance = startSegment.distanceToAnyCell || 0;
-    
-    for (let i = 1; i < availableStarts.length; i++) {
-      const segment = availableStarts[i];
-      const distance = segment.distanceToAnyCell || 0;
-      if (distance > maxStartDistance) {
-        maxStartDistance = distance;
-        startSegment = segment;
-      }
-    }
+    if (!adj.has(keyStart)) adj.set(keyStart, []);
+    adj.get(keyStart)!.push({ toPoint: seg.end, segmentId: seg.id, angle: getAngle(seg.start, seg.end) });
 
-    const currentPath: Line[] = [startSegment];
-    const pathUsedSegments = new Set<string>(); // Local to this path only!
-    pathUsedSegments.add(startSegment.id);
-    globalUsedStartSegments.add(startSegment.id);
-    globalUsedSegments.add(startSegment.id); // Add to global used segments
+    if (!adj.has(keyEnd)) adj.set(keyEnd, []);
+    adj.get(keyEnd)!.push({ toPoint: seg.start, segmentId: seg.id, angle: getAngle(seg.end, seg.start) });
+  });
 
-    let currentSegment = startSegment;
-    let foundConnection = true;
+  adj.forEach(neighbors => neighbors.sort((a, b) => a.angle - b.angle));
 
-    while (foundConnection) {
-      foundConnection = false;
-      
-      // Find connected segments from pathUsableSegments
-      const connectedSegments = pathUsableSegments.filter(segment => {
-        if (pathUsedSegments.has(segment.id)) return false; // Can't use same segment twice in THIS path
-        
-        return pointsEqual(currentSegment.end, segment.start) ||
-               pointsEqual(currentSegment.end, segment.end) ||
-               pointsEqual(currentSegment.start, segment.start) ||
-               pointsEqual(currentSegment.start, segment.end);
-      });
+  // 5.3: Find Cycles (Polygons)
+  const visitedDirectedEdges = new Set<string>(); // "key(fromPoint)->key(toPoint)"
 
-      if (connectedSegments.length > 0) {
-        // Pick the one with highest distanceToAnyCell
-        let nextSegment = connectedSegments[0];
-        let maxDistance = nextSegment.distanceToAnyCell || 0;
-        
-        for (let i = 1; i < connectedSegments.length; i++) {
-          const segment = connectedSegments[i];
-          const distance = segment.distanceToAnyCell || 0;
-          if (distance > maxDistance) {
-            maxDistance = distance;
-            nextSegment = segment;
+  for (const segment of allSegmentsForCycles) {
+    const processDirectedEdge = (cycleStartNode: Point, firstPathNode: Point) => {
+      const initialEdgeKey = pointToKey(cycleStartNode) + "->" + pointToKey(firstPathNode);
+      if (visitedDirectedEdges.has(initialEdgeKey)) return;
+
+      const currentPathPoints: Point[] = [cycleStartNode];
+      let currentNode = firstPathNode;
+      let prevNode = cycleStartNode;
+      let iteration = 0;
+      const maxIterations = allSegmentsForCycles.length + 5; // Safety break
+
+      while (iteration++ < maxIterations) {
+        currentPathPoints.push(currentNode);
+        visitedDirectedEdges.add(pointToKey(prevNode) + "->" + pointToKey(currentNode));
+
+        if (pointsEqual(currentNode, cycleStartNode)) { // Cycle closed
+          // Path is [S, P1, P2, ..., S]. We want [S, P1, P2, ...]
+                  const finalPolygonPoints = currentPathPoints.slice(0, -1);
+          if (finalPolygonPoints.length >= 3) { // Valid polygon
+            polygons.push(finalPolygonPoints);
           }
+          break;
         }
-        
-        currentPath.push(nextSegment);
-        pathUsedSegments.add(nextSegment.id);
-        
-        // Check if this segment was already used in a previous path
-        if (globalUsedSegments.has(nextSegment.id)) {
-          // End the path here since we've connected to a previously traversed segment
-          currentPath.push(nextSegment); // Ensure the connecting segment is part of the path
-          // globalUsedSegments.add(nextSegment.id); // Already added if it was part of another path, or will be added if new
-          break; 
-        }
-        
-        // currentPath.push(nextSegment); // Already done before this block
-        // pathUsedSegments.add(nextSegment.id); // Already done
-        globalUsedSegments.add(nextSegment.id); // Add to global used segments
-        currentSegment = nextSegment;
-        foundConnection = true;
 
-        // If the newly added segment (nextSegment) is a boundary segment,
-        // and it's not the first segment of this path, end the path.
-        if (boundarySegmentIds.has(nextSegment.id) && currentPath.length > 1) {
-            endedAtBoundarySegmentIds.add(nextSegment.id);
-            foundConnection = false; // This will terminate the inner while loop after this segment
+        const neighbors = adj.get(pointToKey(currentNode));
+        if (!neighbors || neighbors.length === 0) break; // Should not happen in a connected graph
+
+        const angleFromPrevToCurrent = getAngle(currentNode, prevNode); // Angle of (currentNode -> prevNode)
+        
+        let indexOfIncomingEdge = -1;
+        for(let i=0; i<neighbors.length; ++i) {
+            if(Math.abs(neighbors[i].angle - angleFromPrevToCurrent) < POINT_COMPARISON_TOLERANCE) {
+                indexOfIncomingEdge = i;
+                break;
+            }
+        }
+
+        if (indexOfIncomingEdge === -1) break; // Should find the incoming edge
+
+        const nextNeighborData = neighbors[(indexOfIncomingEdge + 1) % neighbors.length];
+        
+        prevNode = currentNode;
+        currentNode = nextNeighborData.toPoint;
+
+        // Check if next edge has already been visited in this direction
+        if (visitedDirectedEdges.has(pointToKey(prevNode) + "->" + pointToKey(currentNode))) {
+             // This can happen if we hit a path already explored from another starting segment of the same face
+             // or if it's a bridge segment. If it leads back to start, it's fine.
+             // If it leads elsewhere, it might mean the face is already captured or it's complex.
+             // For simple polygons, this might indicate completion or an issue.
+             // If this edge leads back to startNodeCycle, the main check `pointsEqual(currentNode, cycleStartNode)` will handle it.
+             // Otherwise, breaking here prevents re-tracing parts of other faces or complex structures.
+            if (!pointsEqual(currentNode, cycleStartNode)) {
+                 break;
+            }
         }
       }
-    }
-
-    paths.push(currentPath);
+    };
+    // Process both directions for each segment as a potential starting edge of a face traversal
+    processDirectedEdge(segment.start, segment.end);
+    processDirectedEdge(segment.end, segment.start);
   }
-
-  // Step 9: Create final cell boundaries (may include duplicates if segments are reused)
-  const cellBoundaries: Line[] = [];
-  const addedSegmentIds = new Set<string>();
-
-  paths.forEach(path => {
-    path.forEach(segment => {
-      if (!addedSegmentIds.has(segment.id)) {
-        cellBoundaries.push(segment);
-        addedSegmentIds.add(segment.id);
+  
+  // Deduplicate polygons (important if multiple start edges trace the same face)
+  const uniquePolygonsMap = new Map<string, PolygonType>();
+  polygons.forEach(poly => {
+      // Normalize polygon representation for consistent keying (e.g., sort points by angle from centroid, or just use sorted point keys)
+      const keyPoints = [...poly].sort((a,b) => a.x === b.x ? a.y - b.y : a.x - b.x).map(p => pointToKey(p)).join('|');
+      if (!uniquePolygonsMap.has(keyPoints)) {
+          uniquePolygonsMap.set(keyPoints, poly);
       }
-    });
   });
 
   return {
     midlines,
     allSegments,
     validSegments,
-    nonRedundantSegments, // NEW stage after validSegments
-    boundarySegments,
-    paths,
-    cellBoundaries
+    polygons: Array.from(uniquePolygonsMap.values()),
   };
 };
 
@@ -577,28 +574,15 @@ const CellBoundariesVisualization = () => {
 
   const [showStep, setShowStep] = useState('final');
   const [nextId, setNextId] = useState(4);
-  const [highlightReusedSegments, setHighlightReusedSegments] = useState(false);
+  // const [highlightReusedSegments, setHighlightReusedSegments] = useState(false); // Removed
   const [showDistanceDebug, setShowDistanceDebug] = useState(false);
-  const [showFilteredSegments, setShowFilteredSegments] = useState(false);
+  const [showFilteredSegments, setShowFilteredSegments] = useState(false); // This seems unused, consider removing later if confirmed
   const [colorByDistance, setColorByDistance] = useState(false);
   const [hiddenPathIndices, setHiddenPathIndices] = useState<Set<number>>(new Set());
 
   const results = useMemo(() => {
     return calculateCellBoundaries(cellContents);
   }, [cellContents]);
-
-  // Find segments that are connection points between paths (reused segments)
-  const reusedSegments = useMemo(() => {
-    const segmentUsage = new Map<string, number>();
-    results.paths.forEach(path => {
-      path.forEach(segment => {
-        segmentUsage.set(segment.id, (segmentUsage.get(segment.id) || 0) + 1);
-      });
-    });
-    return new Set(Array.from(segmentUsage.entries())
-      .filter(([_, count]) => count > 1)
-      .map(([id, _]) => id));
-  }, [results.paths]);
 
   // Find max distance for color scaling
   const maxDistance = useMemo(() => {
@@ -708,25 +692,12 @@ const CellBoundariesVisualization = () => {
             <option value="midlines">2. Midlines</option>
             <option value="allSegments">3. All Segments</option>
             <option value="validSegments">4. Valid Segments (No Cell Intersections)</option>
-            <option value="boundarySegments">5. Boundary Segments (Touch Global Boundary)</option>
-            <option value="paths">6. Paths (Segments Can Be Reused)</option>
-            <option value="final">7. Final Cell Boundaries</option>
+            <option value="final">5. Constructed Polygons</option>
+            <option value="merged" disabled>6. Merged Polygons (Future)</option>
           </select>
         </div>
         
-        {(showStep === 'paths' || showStep === 'final') && (
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={highlightReusedSegments}
-              onChange={(e) => setHighlightReusedSegments(e.target.checked)}
-              className="rounded border-gray-300"
-            />
-            <span className="text-sm font-medium text-gray-700">Highlight Connection Points</span>
-          </label>
-        )}
-        
-        {(showStep !== 'cells' && showStep !== 'midlines') && (
+        {(showStep !== 'cells' && showStep !== 'midlines' && showStep !== 'merged') && (
           <>
             <label className="flex items-center gap-2">
               <input
@@ -892,149 +863,61 @@ const CellBoundariesVisualization = () => {
               );
             })}
 
-            {/* Boundary Segments */}
-            {showStep === 'boundarySegments' && results.boundarySegments.map(segment => {
-              const closestInfo = showDistanceDebug ? 
-                findClosestPointOnSegmentToAnyCells(segment.start, segment.end, cellContents) : null;
-              
+            {/* Final Cell Boundaries (now Constructed Polygons) */}
+            {showStep === 'final' && results.polygons.map((polygon, index) => {
+              const polygonColors = [
+                "rgba(59, 130, 246, 0.3)", // blue-500
+                "rgba(239, 68, 68, 0.3)",  // red-500
+                "rgba(16, 185, 129, 0.3)", // green-500
+                "rgba(168, 85, 247, 0.3)", // purple-500
+                "rgba(245, 158, 11, 0.3)", // yellow-500 (amber-500)
+                "rgba(236, 72, 153, 0.3)", // pink-500
+                "rgba(20, 184, 166, 0.3)", // teal-500
+                "rgba(249, 115, 22, 0.3)", // orange-500
+              ];
+              const fillColor = polygonColors[index % polygonColors.length];
               return (
-                <g key={segment.id}>
+                <polygon
+                  key={`polygon-${index}`}
+                  points={polygon.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')}
+                  fill={fillColor}
+                  stroke="#4B5563" // gray-600 for border
+                  strokeWidth="1"
+                />
+              );
+            })}
+            {/* Optionally, draw segments of polygons if needed for debug, colored by distance */}
+            {showStep === 'final' && colorByDistance && results.polygons.flatMap((poly, polyIndex) => {
+              const segments: Line[] = [];
+              for (let i = 0; i < poly.length; i++) {
+                const p1 = poly[i];
+                const p2 = poly[(i + 1) % poly.length];
+                // Find original segment or create a temporary one for distance calculation
+                const dist = segmentDistanceToAnyCell(p1, p2, cellContents);
+                segments.push({ id: `poly-${polyIndex}-seg-${i}`, start: p1, end: p2, distanceToAnyCell: dist });
+              }
+              return segments.map(segment => (
+                 <g key={segment.id}>
                   <line
                     x1={segment.start.x}
                     y1={segment.start.y}
                     x2={segment.end.x}
                     y2={segment.end.y}
-                    stroke={"#10b981"}
+                    stroke={getDistanceColor(segment.distanceToAnyCell || 0) || '#333'}
                     strokeWidth="2"
-                    opacity={"0.8"}
+                    opacity="0.7"
                   />
-                  <text
-                    x={(segment.start.x + segment.end.x) / 2}
-                    y={(segment.start.y + segment.end.y) / 2 - 5}
-                    fontSize="10"
-                    fill={"#000"}
-                    textAnchor="middle"
-                    fontWeight="bold"
-                  >
-                    {segment.distanceToAnyCell?.toFixed(1)}
-                  </text>
-                  {showDistanceDebug && closestInfo && (
-                    <>
-                      <circle
-                        cx={closestInfo.point.x}
-                        cy={closestInfo.point.y}
-                        r="3"
-                        fill="#dc2626"
-                        stroke="#fff"
-                        strokeWidth="1"
-                      />
-                    </>
+                  {showDistanceDebug && (
+                     <text
+                        x={(segment.start.x + segment.end.x) / 2}
+                        y={(segment.start.y + segment.end.y) / 2 - 5}
+                        fontSize="9" fill={getDistanceColor(segment.distanceToAnyCell || 0) || '#333'} textAnchor="middle">
+                        {segment.distanceToAnyCell?.toFixed(0)}
+                      </text>
                   )}
                 </g>
-              );
+              ));
             })}
-
-            {/* Paths */}
-            {showStep === 'paths' && results.paths.map((path, pathIndex) => {
-              if (hiddenPathIndices.has(pathIndex)) return null;
-
-              const pathColors = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#06b6d4', '#ec4899', '#84cc16'];
-              const pathColor = pathColors[pathIndex % pathColors.length];
-              
-              return (
-                <g key={`path-${pathIndex}`}>
-                  {path.map((segment, segmentIndex) => {
-                    const segmentColor = getDistanceColor(segment.distanceToAnyCell || 0) || 
-                      (highlightReusedSegments && reusedSegments.has(segment.id) ? '#000000' : pathColor);
-                    
-                    return (
-                      <g key={`${segment.id}-path${pathIndex}`}>
-                        <line
-                          x1={segment.start.x}
-                          y1={segment.start.y}
-                          x2={segment.end.x}
-                          y2={segment.end.y}
-                          stroke={segmentColor}
-                          strokeWidth={highlightReusedSegments && reusedSegments.has(segment.id) ? "8" : "4"}
-                          opacity="0.7"
-                          strokeDasharray={highlightReusedSegments && reusedSegments.has(segment.id) ? "none" : "none"}
-                        />
-                        {highlightReusedSegments && reusedSegments.has(segment.id) && (
-                          <>
-                            <circle cx={segment.start.x} cy={segment.start.y} r="4" fill="#ff0000" />
-                            <circle cx={segment.end.x} cy={segment.end.y} r="4" fill="#ff0000" />
-                          </>
-                        )}
-                        <text
-                          x={(segment.start.x + segment.end.x) / 2}
-                          y={(segment.start.y + segment.end.y) / 2 - 5}
-                          fontSize="10"
-                          fill="#000"
-                          textAnchor="middle"
-                          fontWeight="bold"
-                        >
-                          {segment.distanceToAnyCell?.toFixed(1)}
-                        </text>
-                        {/* Show path order */}
-                        {showDistanceDebug && (
-                          <circle
-                            cx={(segment.start.x + segment.end.x) / 2}
-                            cy={(segment.start.y + segment.end.y) / 2}
-                            r="8"
-                            fill="white"
-                            stroke={colorByDistance ? "#333" : pathColor}
-                            strokeWidth="2"
-                          />
-                        )}
-                        {showDistanceDebug && (
-                          <text
-                            x={(segment.start.x + segment.end.x) / 2}
-                            y={(segment.start.y + segment.end.y) / 2 + 3}
-                            fontSize="8"
-                            fill={colorByDistance ? "#333" : pathColor}
-                            textAnchor="middle"
-                            fontWeight="bold"
-                          >
-                            {segmentIndex + 1}
-                          </text>
-                        )}
-                      </g>
-                    );
-                  })}
-                </g>
-              );
-            })}
-
-            {/* Final Cell Boundaries */}
-            {showStep === 'final' && results.cellBoundaries.map(segment => (
-              <g key={segment.id}>
-                <line
-                  x1={segment.start.x}
-                  y1={segment.start.y}
-                  x2={segment.end.x}
-                  y2={segment.end.y}
-                  stroke={highlightReusedSegments && reusedSegments.has(segment.id) ? '#8b5cf6' : '#dc2626'}
-                  strokeWidth={highlightReusedSegments && reusedSegments.has(segment.id) ? "5" : "3"}
-                  opacity="0.9"
-                />
-                {highlightReusedSegments && reusedSegments.has(segment.id) && (
-                  <>
-                    <circle cx={segment.start.x} cy={segment.start.y} r="3" fill="#8b5cf6" />
-                    <circle cx={segment.end.x} cy={segment.end.y} r="3" fill="#8b5cf6" />
-                  </>
-                )}
-                <text
-                  x={(segment.start.x + segment.end.x) / 2}
-                  y={(segment.start.y + segment.end.y) / 2 - 5}
-                  fontSize="10"
-                  fill="#000"
-                  textAnchor="middle"
-                  fontWeight="bold"
-                >
-                  {segment.distanceToAnyCell?.toFixed(1)}
-                </text>
-              </g>
-            ))}
           </svg>
 
           {/* Cell contents */}
@@ -1074,19 +957,8 @@ const CellBoundariesVisualization = () => {
               <strong>Valid Segments:</strong> {results.validSegments.length}
             </div>
             <div>
-              <strong>Boundary Segments:</strong> {results.boundarySegments.length}
+              <strong>Constructed Polygons:</strong> {results.polygons.length}
             </div>
-            <div>
-              <strong>Paths:</strong> {results.paths.length}
-            </div>
-            <div>
-              <strong>Final Boundaries:</strong> {results.cellBoundaries.length}
-            </div>
-            {(showStep === 'paths' || showStep === 'final') && (
-              <div className="text-purple-600">
-                <strong>Connection Points:</strong> {reusedSegments.size}
-              </div>
-            )}
           </div>
 
           <div className="mt-4 pt-4 border-t border-gray-200">
@@ -1096,31 +968,20 @@ const CellBoundariesVisualization = () => {
               {showStep === 'midlines' && "Midlines drawn between all cell pairs with gaps, extending to container bounds."}
               {showStep === 'allSegments' && "All segments created between midline intersections. Distance values show minimum distance from segment to any cell."}
               {showStep === 'validSegments' && "Segments that don't intersect any cell content (invalid segments removed)."}
-              {showStep === 'boundarySegments' && "Valid segments that touch the global boundary (container edges). All these segments are candidates for starting paths."}
-              {showStep === 'paths' && (
-                <>
-                  Connected paths built using greedy search. <strong>Key behaviors:</strong> 
-                  <br/>• Paths start from boundary segments (highest distance first)
-                  <br/>• At each step, selects the connected segment with highest distance
-                  <br/>• <strong>Paths end when they contact any previously traversed segment</strong>
-                  <br/>• Segments cannot be reused within the same path (no backtracking)
-                  {highlightReusedSegments && reusedSegments.size > 0 && <><br/>• <strong>Connection points:</strong> Segments where paths meet are highlighted (thicker lines with red endpoints)</>}
-                  {showDistanceDebug && <><br/>• Path order shown with numbered circles</>}
-                </>
-              )}
               {showStep === 'final' && (
                 <>
-                  Final cell boundaries - the output of the algorithm. These are all unique segments from all paths combined.
-                  Paths terminate when they contact previously traversed segments, creating a connected boundary network.
-                  {highlightReusedSegments && reusedSegments.size > 0 && <><br/><strong>Connection points</strong> (where paths meet) are highlighted.</>}
+                  Constructed Polygons - Output of new Stage 5.
+                  These are the fundamental faces formed by valid segments and the container boundary.
+                  The algorithm traces paths along segments, always taking the 'next' angular segment at intersections to define polygon boundaries.
                 </>
               )}
-              {showDistanceDebug && showStep !== 'cells' && showStep !== 'midlines' && (
+              {showStep === 'merged' && "Future step: Merged Polygons - Polygons will be merged based on specific criteria."}
+              {showDistanceDebug && showStep !== 'cells' && showStep !== 'midlines' && showStep !== 'merged' && (
                 <div className="mt-2 text-red-600">
-                  <strong>Debug Mode:</strong> Red dots show the closest point on each segment to any cell, with the actual distance displayed.
+                  <strong>Debug Mode:</strong> For segment-based views, red dots show closest point to cells. For polygon view, segment distances (if shown) are calculated on-the-fly for polygon edges.
                 </div>
               )}
-              {colorByDistance && showStep === 'paths' && (
+              {colorByDistance && (showStep === 'allSegments' || showStep === 'validSegments' || showStep === 'final') && (
                 <div className="mt-2 text-sm">
                   <strong>Color Scale:</strong> 
                   <span className="text-blue-600"> Blue = Close to cells</span> → 
@@ -1132,58 +993,6 @@ const CellBoundariesVisualization = () => {
               )}
             </div>
           </div>
-
-          {showStep === 'paths' && results.paths.length > 0 && (
-            <div className="mt-4 pt-4 border-t border-gray-200">
-              <h4 className="font-semibold mb-2">Path Details:</h4>
-              <div className="text-sm space-y-2">
-                {results.paths.map((path, index) => {
-                  const pathColors = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#06b6d4', '#ec4899', '#84cc16'];
-                  const pathColor = pathColors[index % pathColors.length];
-                  const avgDistance = path.reduce((sum, seg) => sum + (seg.distanceToAnyCell || 0), 0) / path.length;
-                  const isHidden = hiddenPathIndices.has(index);
-
-                  const togglePathVisibility = () => {
-                    setHiddenPathIndices(prev => {
-                      const newSet = new Set(prev);
-                      if (newSet.has(index)) {
-                        newSet.delete(index);
-                      } else {
-                        newSet.add(index);
-                      }
-                      return newSet;
-                    });
-                  };
-
-                  return (
-                    <div key={index} className={`text-gray-600 ${isHidden ? 'opacity-50' : ''}`}>
-                      <div className="flex items-center gap-2">
-                        <div
-                          className="w-4 h-4 rounded cursor-pointer"
-                          style={{ backgroundColor: pathColor }}
-                          onClick={togglePathVisibility}
-                          title={isHidden ? "Show path" : "Hide path"}
-                        />
-                        <span className="font-medium">Path {index + 1}:</span> {path.length} segments
-                      </div>
-                      <div className="ml-6 text-xs text-gray-500">
-                        Avg distance: {avgDistance.toFixed(1)}
-                        {showDistanceDebug && !isHidden && (
-                          <div>Distances: {path.map(s => s.distanceToAnyCell?.toFixed(1)).join(' → ')}</div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              {showDistanceDebug && (
-                <div className="mt-2 text-xs text-gray-500">
-                  <strong>Debug:</strong> Numbers in circles show segment order in path. 
-                  Paths terminate when they contact previously used segments.
-                </div>
-              )}
-            </div>
-          )}
         </div>
       </div>
     </div>
