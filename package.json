@@ -5,7 +5,8 @@
   "scripts": {
     "build:site": "bun build site/index.html --outdir site-build",
     "vercel-build": "bun run build:site",
-    "start": "bun run site/index.html",
+    "start1": "bun run site/index.html",
+    "start2": "bun run site/index2.html",
     "format": "biome format --write .",
     "format:check": "biome format ."
   },
