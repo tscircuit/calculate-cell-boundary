@@ -1004,13 +1004,18 @@ const CellBoundariesVisualization = () => {
 
           {/* ❷ DISPLAY MERGED RECTS (IN STAGE 6) -------------------------------- */}
           {showStep === "mergedRects" &&
-            mergedRects.map((rect, groupIdx) => {
+            results.mergedRectGroups.map((group, groupIdx) => {
               const colorClass =
                 mergedRectGroupColors[groupIdx % mergedRectGroupColors.length]
-              return (
+              // The first element in the group is the containing rect, second is the original cell,
+              // the rest are other grid rects. We want to draw all of them.
+              // Skip the original cell rect (index 1) as it's drawn separately with text.
+              // Or, draw all of them here with less opacity and let the main cell draw on top.
+              // For now, let's draw all rects in the group.
+              return group.map((rect, rectIdx) => (
                 <div
-                  key={`merged-rect-${groupIdx}`}
-                  className={`absolute ${colorClass} opacity-40 border-4 border-white rounded-lg pointer-events-none`}
+                  key={`merged-rect-${groupIdx}-${rect.cellId || rectIdx}`}
+                  className={`absolute ${colorClass} opacity-30 border border-white pointer-events-none`}
                   style={{
                     left: `${rect.x}px`,
                     top: `${rect.y}px`,
@@ -1018,7 +1023,7 @@ const CellBoundariesVisualization = () => {
                     height: `${rect.height}px`,
                   }}
                 />
-              )
+              ))
             })}
 
           {/* Cell contents */}
