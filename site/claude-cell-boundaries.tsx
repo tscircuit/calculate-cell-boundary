@@ -290,6 +290,7 @@ export const calculateCellBoundaries = (
   allSegments: Array<Line>;
   validSegments: Array<Line>;
   polygons: Array<PolygonType>;
+  mergedPolygons: Array<PolygonType>;
 } => {
   const cellContents = inputCellContents.map((cellContent, index) => ({
     ...cellContent,
@@ -560,8 +561,137 @@ export const calculateCellBoundaries = (
     allSegments,
     validSegments,
     polygons: Array.from(uniquePolygonsMap.values()),
+    mergedPolygons: calculateMergedPolygons(Array.from(uniquePolygonsMap.values()), allSegmentsForCycles, cellContents),
   };
 };
+
+const getPolygonSegments = (polygon: PolygonType): { start: Point, end: Point }[] => {
+  const segments = [];
+  for (let i = 0; i < polygon.length; i++) {
+    segments.push({ start: polygon[i], end: polygon[(i + 1) % polygon.length] });
+  }
+  return segments;
+};
+
+const getCanonicalSegmentKey = (p1: Point, p2: Point): string => {
+  const key1 = pointToKey(p1);
+  const key2 = pointToKey(p2);
+  return key1 < key2 ? `${key1}_${key2}` : `${key2}_${key1}`;
+};
+
+// Stage 6: Merge Polygons
+const calculateMergedPolygons = (
+  initialPolygons: PolygonType[],
+  sourceSegments: Line[], // Segments with distanceToAnyCell info
+  cellContents: CellContent[]
+): PolygonType[] => {
+  let currentPolygons = initialPolygons.map((poly, index) => ({ id: `poly-${index}`, points: poly }));
+
+  // Create a map of all source segments for quick lookup of distanceToAnyCell
+  const sourceSegmentMap = new Map<string, Line>();
+  sourceSegments.forEach(seg => {
+    sourceSegmentMap.set(getCanonicalSegmentKey(seg.start, seg.end), seg);
+  });
+
+  // Identify shared internal segments and sort them
+  const sharedSegmentsToConsider: { segment: Line, polyIds: [string, string] }[] = [];
+  const segmentToPolygonsMap = new Map<string, { segmentLine: Line, polygonIds: string[] }>();
+
+  currentPolygons.forEach(poly => {
+    const polygonSegments = getPolygonSegments(poly.points);
+    polygonSegments.forEach(seg => {
+      const canonicalKey = getCanonicalSegmentKey(seg.start, seg.end);
+      const originalSegment = sourceSegmentMap.get(canonicalKey);
+      if (!originalSegment) {
+        // This might be a segment from a previously merged polygon, or an issue.
+        // For now, we only consider segments that were in the original set.
+        // console.warn("Segment not found in source map:", canonicalKey);
+        return; 
+      }
+
+      if (!segmentToPolygonsMap.has(canonicalKey)) {
+        segmentToPolygonsMap.set(canonicalKey, { segmentLine: originalSegment, polygonIds: [] });
+      }
+      segmentToPolygonsMap.get(canonicalKey)!.polygonIds.push(poly.id);
+    });
+  });
+
+  segmentToPolygonsMap.forEach(({ segmentLine, polygonIds }) => {
+    if (polygonIds.length === 2) { // Shared by exactly two polygons
+      // Ensure it's not a boundary segment (distanceToAnyCell > 0 or not on container edge)
+      // For simplicity, we rely on distanceToAnyCell. Boundary segments from closure have 0.
+      // If a validSegment happens to have distance 0 and is internal, it could be merged.
+      // This seems fine by the rule "lowest distanceToAnyCell".
+      sharedSegmentsToConsider.push({ segment: segmentLine, polyIds: [polygonIds[0], polygonIds[1]] });
+    }
+  });
+
+  sharedSegmentsToConsider.sort((a, b) => (a.segment.distanceToAnyCell || 0) - (b.segment.distanceToAnyCell || 0));
+
+  for (const { segment: sharedSeg, polyIds } of sharedSegmentsToConsider) {
+    const poly1Obj = currentPolygons.find(p => p.id === polyIds[0]);
+    const poly2Obj = currentPolygons.find(p => p.id === polyIds[1]);
+
+    if (!poly1Obj || !poly2Obj) continue; // One or both polygons already merged
+
+    const poly1 = poly1Obj.points;
+    const poly2 = poly2Obj.points;
+
+    // Attempt to merge poly1 and poly2 by removing sharedSeg
+    const s1 = sharedSeg.start;
+    const s2 = sharedSeg.end;
+
+    const findPath = (polygon: Point[], startNode: Point, endNode: Point): Point[] | null => {
+      const startIndex = polygon.findIndex(p => pointsEqual(p, startNode));
+      if (startIndex === -1) return null;
+      
+      const path: Point[] = [];
+      let currentIndex = startIndex;
+      for (let i = 0; i < polygon.length; i++) {
+          path.push(polygon[currentIndex]);
+          if (pointsEqual(polygon[currentIndex], endNode)) break;
+          currentIndex = (currentIndex + 1) % polygon.length;
+      }
+      // Ensure endNode was actually reached and forms a path
+      if (!pointsEqual(path[path.length-1], endNode)) return null; 
+      return path;
+    };
+    
+    // Path from poly1, s1 -> ... -> s2 (this is the shared segment part)
+    // Path from poly2, s2 -> ... -> s1 (this is the shared segment part in other poly)
+
+    // We need the parts *not* including the shared segment.
+    // In poly1: path from s2 -> ... -> s1
+    // In poly2: path from s1 -> ... -> s2
+    
+    let path1 = findPath(poly1, s2, s1); // Path in poly1 from s2 around to s1
+    let path2 = findPath(poly2, s1, s2); // Path in poly2 from s1 around to s2
+
+    if (!path1 || !path2) continue; // Should not happen if logic is correct
+
+    // The merged polygon points are s1, (points from path2 excluding s1 and s2), s2, (points from path1 excluding s2 and s1)
+    // More simply: path2 (which is s1...s2) followed by path1 (s2...s1) excluding duplicate s2 and s1.
+    const mergedPoints: Point[] = [];
+    path2.forEach(p => mergedPoints.push(p)); // Adds s1...s2 from poly2
+    // Add points from path1, skipping the first (s2, already added) and last (s1, will close loop)
+    for (let i = 1; i < path1.length -1; i++) {
+        mergedPoints.push(path1[i]);
+    }
+    
+    if (mergedPoints.length < 3) continue; // Not a valid polygon
+
+    const numCells = countCellsInPolygon(mergedPoints, cellContents);
+
+    if (numCells <= 1) {
+      // Merge is valid
+      const newPolyId = `${poly1Obj.id}-${poly2Obj.id}-merged`;
+      currentPolygons = currentPolygons.filter(p => p.id !== poly1Obj.id && p.id !== poly2Obj.id);
+      currentPolygons.push({ id: newPolyId, points: mergedPoints });
+    }
+  }
+  return currentPolygons.map(p => p.points);
+};
+
 
 const CellBoundariesVisualization = () => {
   const [cellContents, setCellContents] = useState([
@@ -693,11 +823,11 @@ const CellBoundariesVisualization = () => {
             <option value="allSegments">3. All Segments</option>
             <option value="validSegments">4. Valid Segments (No Cell Intersections)</option>
             <option value="final">5. Constructed Polygons</option>
-            <option value="merged" disabled>6. Merged Polygons (Future)</option>
+            <option value="merged">6. Merged Polygons</option>
           </select>
         </div>
         
-        {(showStep !== 'cells' && showStep !== 'midlines' && showStep !== 'merged') && (
+        {(showStep !== 'cells' && showStep !== 'midlines') && (
           <>
             <label className="flex items-center gap-2">
               <input
@@ -918,6 +1048,61 @@ const CellBoundariesVisualization = () => {
                 </g>
               ));
             })}
+
+            {/* Merged Polygons */}
+            {showStep === 'merged' && results.mergedPolygons.map((polygon, index) => {
+              const polygonColors = [ // Slightly different set or more opaque for merged
+                "rgba(59, 130, 246, 0.5)", // blue-500
+                "rgba(239, 68, 68, 0.5)",  // red-500
+                "rgba(16, 185, 129, 0.5)", // green-500
+                "rgba(168, 85, 247, 0.5)", // purple-500
+                "rgba(245, 158, 11, 0.5)", // yellow-500 (amber-500)
+                "rgba(236, 72, 153, 0.5)", // pink-500
+                "rgba(20, 184, 166, 0.5)", // teal-500
+                "rgba(249, 115, 22, 0.5)", // orange-500
+              ];
+              const fillColor = polygonColors[index % polygonColors.length];
+              return (
+                <polygon
+                  key={`merged-polygon-${index}`}
+                  points={polygon.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')}
+                  fill={fillColor}
+                  stroke="#374151" // gray-700 for border
+                  strokeWidth="1.5"
+                />
+              );
+            })}
+            {/* Optionally, draw segments of merged polygons if needed for debug, colored by distance */}
+            {showStep === 'merged' && colorByDistance && results.mergedPolygons.flatMap((poly, polyIndex) => {
+              const segments: Line[] = [];
+              for (let i = 0; i < poly.length; i++) {
+                const p1 = poly[i];
+                const p2 = poly[(i + 1) % poly.length];
+                const dist = segmentDistanceToAnyCell(p1, p2, cellContents);
+                segments.push({ id: `merged-poly-${polyIndex}-seg-${i}`, start: p1, end: p2, distanceToAnyCell: dist });
+              }
+              return segments.map(segment => (
+                 <g key={segment.id}>
+                  <line
+                    x1={segment.start.x}
+                    y1={segment.start.y}
+                    x2={segment.end.x}
+                    y2={segment.end.y}
+                    stroke={getDistanceColor(segment.distanceToAnyCell || 0) || '#333'}
+                    strokeWidth="2"
+                    opacity="0.7"
+                  />
+                  {showDistanceDebug && (
+                     <text
+                        x={(segment.start.x + segment.end.x) / 2}
+                        y={(segment.start.y + segment.end.y) / 2 - 5}
+                        fontSize="9" fill={getDistanceColor(segment.distanceToAnyCell || 0) || '#333'} textAnchor="middle">
+                        {segment.distanceToAnyCell?.toFixed(0)}
+                      </text>
+                  )}
+                </g>
+              ));
+            })}
           </svg>
 
           {/* Cell contents */}
@@ -959,6 +1144,9 @@ const CellBoundariesVisualization = () => {
             <div>
               <strong>Constructed Polygons:</strong> {results.polygons.length}
             </div>
+            <div>
+              <strong>Merged Polygons:</strong> {results.mergedPolygons.length}
+            </div>
           </div>
 
           <div className="mt-4 pt-4 border-t border-gray-200">
@@ -970,15 +1158,21 @@ const CellBoundariesVisualization = () => {
               {showStep === 'validSegments' && "Segments that don't intersect any cell content (invalid segments removed)."}
               {showStep === 'final' && (
                 <>
-                  Constructed Polygons - Output of new Stage 5.
+                  Constructed Polygons - Output of Stage 5.
                   These are the fundamental faces formed by valid segments and the container boundary.
                   The algorithm traces paths along segments, always taking the 'next' angular segment at intersections to define polygon boundaries.
                 </>
               )}
-              {showStep === 'merged' && "Future step: Merged Polygons - Polygons will be merged based on specific criteria."}
-              {showDistanceDebug && showStep !== 'cells' && showStep !== 'midlines' && showStep !== 'merged' && (
+              {showStep === 'merged' && (
+                <>
+                  Merged Polygons - Output of Stage 6.
+                  Starting with 'Constructed Polygons', shared internal segments are considered for removal, from lowest to highest `distanceToAnyCell`.
+                  If removing a segment merges two polygons, and the new merged polygon contains 0 or 1 cell centers, the merge is kept. Otherwise, the segment remains.
+                </>
+              )}
+              {showDistanceDebug && showStep !== 'cells' && showStep !== 'midlines' && (
                 <div className="mt-2 text-red-600">
-                  <strong>Debug Mode:</strong> For segment-based views, red dots show closest point to cells. For polygon view, segment distances (if shown) are calculated on-the-fly for polygon edges.
+                  <strong>Debug Mode:</strong> For segment-based views, red dots show closest point to cells. For polygon views, segment distances (if shown) are calculated on-the-fly for polygon edges.
                 </div>
               )}
               {colorByDistance && (showStep === 'allSegments' || showStep === 'validSegments' || showStep === 'final') && (
