@@ -429,6 +429,28 @@ export const calculateCellBoundaries = (
   const xs = Array.from(verticalXs).sort((a, b) => a - b)
   const ys = Array.from(horizontalYs).sort((a, b) => a - b)
 
+  // --- Rect that tightly follows the grid around each cell ------------
+  const cellContainingRectMap = new Map<string, CellContent>()
+  const cellContainingRects: CellContent[] = []
+
+  cellContents.forEach((cell, idx) => {
+    // left / right grid lines that bound the cell
+    const left  = xs.filter((v) => v <= cell.x).pop()!
+    const right = xs.find((v) => v >= cell.x + cell.width)!
+    const top   = ys.filter((v) => v <= cell.y).pop()!
+    const bot   = ys.find((v) => v >= cell.y + cell.height)!
+
+    const rect: CellContent = {
+      cellId: `contain-${cell.cellId}`,
+      x: left,
+      y: top,
+      width: right - left,
+      height: bot - top,
+    }
+    cellContainingRectMap.set(cell.cellId, rect)
+    cellContainingRects.push(rect)
+  })
+
   // helper: axis-aligned rectangle overlap
   const rectsOverlap = (a: CellContent, b: CellContent) =>
     a.x < b.x + b.width &&
@@ -465,36 +487,75 @@ export const calculateCellBoundaries = (
     }
   }
 
-  // ── Step 5: merge cells that are connected by an unobstructed midline ──
-  // Any pair of cells that shares at least one *valid* segment (segment
-  // produced from a midline that is not blocked by other cells) belongs to
-  // the same merged-rect group.  We collect those relations with a union-find.
-
-  const dsu = new DSU(cellContents.length)
-
-  // Helper: cellId → index
-  const cellIdToIndex = new Map<string, number>()
-  cellContents.forEach((cell, idx) => cellIdToIndex.set(cell.cellId, idx))
-
-  // Union the two cells that generated every valid segment
-  validSegments.forEach((seg) => {
-    const [idA, idB] = seg.fromCellIds ?? []
-    const idxA = cellIdToIndex.get(idA)
-    const idxB = cellIdToIndex.get(idB)
-    if (idxA !== undefined && idxB !== undefined) {
-      dsu.union(idxA, idxB)
+  // add the containing rects to the grid set
+  cellContainingRects.forEach((r) => {
+    const key = `${r.x},${r.y},${r.width},${r.height}`
+    if (!gridRects.some((g) => `${g.x},${g.y},${g.width},${g.height}` === key)) {
+      gridRects.push(r)
     }
   })
 
-  // Build final groups
-  const groupMap = new Map<number, CellContent[]>()
-  cellContents.forEach((cell, idx) => {
-    const root = dsu.find(idx)
-    if (!groupMap.has(root)) groupMap.set(root, [])
-    groupMap.get(root)!.push(cell)
+  // ── Step 5: merge GRID rects outward from each cell ───────────────
+  // One cell ⇒ one merged-rect group.  Start with the rect that
+  // contains the cell, then pull in adjacent rects in order of
+  // edge-to-edge distance until every rect is assigned.
+
+  // Working copy of every grid rect with merge flags
+  const workRects = gridRects.map((r) => ({
+    ...r,
+    merged: false as boolean,
+    groupId: null as number | null,
+  }))
+
+  // 5-a  mark the “key rects” (the cell-containing rects) as the seeds
+  cellContainingRects.forEach((contRect, idx) => {
+    const wr = workRects.find(
+      (w) =>
+        w.x === contRect.x &&
+        w.y === contRect.y &&
+        w.width === contRect.width &&
+        w.height === contRect.height,
+    )
+    if (wr) {
+      wr.merged = true
+      wr.groupId = idx // one group per cell
+    }
   })
 
-  const mergedRectGroups = [...groupMap.values()]
+  // 5-b  prepare list of unmerged rects sorted by distance to NEAREST key-rect
+  type DistRec = { id: string; dist: number }
+  const unmergedDistances: DistRec[] = workRects
+    .filter((r) => !r.merged)
+    .map((r) => ({
+      id: r.cellId,
+      dist: Math.min(
+        ...cellContainingRects.map((keyR) => edgeToEdgeDistance(r, keyR)),
+      ),
+    }))
+    .sort((a, b) => a.dist - b.dist)
+
+  // 5-c  iterative grow-out: assign each rect to the first adjacent merged group
+  unmergedDistances.forEach(({ id }) => {
+    const rect = workRects.find((r) => r.cellId === id)!
+    const neighbours = workRects.filter(
+      (other) => other.merged && areAdjacent(rect, other),
+    )
+    if (neighbours.length) {
+      rect.merged = true
+      rect.groupId = neighbours[0].groupId
+    }
+  })
+
+  // 5-d  collect final groups – first element MUST be the cell-containing rect,
+  //      followed by the original cell rect and the rest of the merged grid rects
+  const mergedRectGroups: CellContent[][] = []
+  cellContainingRects.forEach((contRect, idx) => {
+    const groupRects = workRects
+      .filter((r) => r.merged && r.groupId === idx)
+      .map(({ merged, groupId, ...plain }) => plain) // strip helper props
+    const cellRect = cellContents[idx]                // original cell rect
+    mergedRectGroups.push([contRect, cellRect, ...groupRects.filter((r) => r.cellId !== contRect.cellId)])
+  })
 
   return {
     midlines,
