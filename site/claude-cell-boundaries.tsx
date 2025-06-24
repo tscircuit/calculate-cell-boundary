@@ -347,7 +347,9 @@ export const calculateCellBoundaries = (
   const paths: Array<Array<Line>> = [];
   const globalUsedStartSegments = new Set<string>(); // Track which boundary segments have been used as starting points
   const globalUsedSegments = new Set<string>(); // Track ALL segments that have been used in any path
-  
+  const boundarySegmentIds = new Set(boundarySegments.map(s => s.id)); // IDs of all boundary segments
+  const endedAtBoundarySegmentIds = new Set<string>(); // IDs of boundary segments that terminated a path
+
   // Create a set of boundary segment IDs that were filtered out
   const filteredOutBoundarySegmentIds = new Set<string>();
   boundarySegments.forEach(seg => {
@@ -359,9 +361,17 @@ export const calculateCellBoundaries = (
   // Valid segments that can be used in paths (excluding filtered boundary segments)
   const pathUsableSegments = validSegments.filter(seg => !filteredOutBoundarySegmentIds.has(seg.id));
 
-  while (remainingBoundarySegments.some(s => !globalUsedStartSegments.has(s.id))) {
+  while (true) {
     // Find segment with highest distanceToAnyCell that hasn't been used as a starting point
-    const availableStarts = remainingBoundarySegments.filter(s => !globalUsedStartSegments.has(s.id));
+    // and hasn't terminated a previous path.
+    const availableStarts = remainingBoundarySegments.filter(
+      s => !globalUsedStartSegments.has(s.id) && !endedAtBoundarySegmentIds.has(s.id)
+    );
+
+    if (availableStarts.length === 0) {
+      break; // No more valid starting segments
+    }
+
     let startSegment = availableStarts[0];
     let maxStartDistance = startSegment.distanceToAnyCell || 0;
     
@@ -416,12 +426,23 @@ export const calculateCellBoundaries = (
         // Check if this segment was already used in a previous path
         if (globalUsedSegments.has(nextSegment.id)) {
           // End the path here since we've connected to a previously traversed segment
-          break;
+          currentPath.push(nextSegment); // Ensure the connecting segment is part of the path
+          // globalUsedSegments.add(nextSegment.id); // Already added if it was part of another path, or will be added if new
+          break; 
         }
         
+        // currentPath.push(nextSegment); // Already done before this block
+        // pathUsedSegments.add(nextSegment.id); // Already done
         globalUsedSegments.add(nextSegment.id); // Add to global used segments
         currentSegment = nextSegment;
         foundConnection = true;
+
+        // If the newly added segment (nextSegment) is a boundary segment,
+        // and it's not the first segment of this path, end the path.
+        if (boundarySegmentIds.has(nextSegment.id) && currentPath.length > 1) {
+            endedAtBoundarySegmentIds.add(nextSegment.id);
+            foundConnection = false; // This will terminate the inner while loop after this segment
+        }
       }
     }
 
