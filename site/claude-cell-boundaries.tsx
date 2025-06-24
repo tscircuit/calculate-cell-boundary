@@ -678,75 +678,63 @@ export const calculateCellBoundaries = (
     ])
   })
 
-  // Step 6: Calculate outline lines for merged groups
+  // ── Step 6:  outlines between DIFFERENT merged-rect groups ──────────────
   const outlineLines: Line[] = []
   let outlineLineId = 0
+  const TOL = POINT_COMPARISON_TOLERANCE
 
-  const isOnGlobalBorder = (start: Point, end: Point, cW: number, cH: number, tol: number): boolean => {
-    const startX = parseFloat(start.x.toFixed(4));
-    const startY = parseFloat(start.y.toFixed(4));
-    const endX = parseFloat(end.x.toFixed(4));
-    const endY = parseFloat(end.y.toFixed(4));
-    
-    // Horizontal segment
-    if (Math.abs(startY - endY) < tol) {
-      if (Math.abs(startY - 0) < tol || Math.abs(startY - cH) < tol) {
-        return true;
+  // Only consider grid rects that were merged into some group
+  const groupedRects = workRects.filter(
+    (r): r is WorkRect & { groupId: number } => r.groupId !== null,
+  )
+
+  // Helper map to de-duplicate identical segments
+  const segMap = new Map<string, { start: Point; end: Point }>()
+
+  for (let i = 0; i < groupedRects.length; i++) {
+    const a = groupedRects[i]
+    for (let j = i + 1; j < groupedRects.length; j++) {
+      const b = groupedRects[j]
+      if (a.groupId === b.groupId) continue // same merged rect → skip
+
+      // ── vertical shared edge (left/right) ─────────────────────────────
+      const aRight = a.x + a.width
+      const bRight = b.x + b.width
+      if (Math.abs(aRight - b.x) < TOL || Math.abs(bRight - a.x) < TOL) {
+        const x = Math.abs(aRight - b.x) < TOL ? aRight : bRight
+        const y0 = Math.max(a.y, b.y)
+        const y1 = Math.min(a.y + a.height, b.y + b.height)
+        if (y1 - y0 > TOL) {
+          const s = { x, y: y0 }
+          const e = { x, y: y1 }
+          segMap.set(getSegmentKey(s, e), { start: s, end: e })
+        }
+      }
+
+      // ── horizontal shared edge (top/bottom) ──────────────────────────
+      const aBot = a.y + a.height
+      const bBot = b.y + b.height
+      if (Math.abs(aBot - b.y) < TOL || Math.abs(bBot - a.y) < TOL) {
+        const y = Math.abs(aBot - b.y) < TOL ? aBot : bBot
+        const x0 = Math.max(a.x, b.x)
+        const x1 = Math.min(a.x + a.width, b.x + b.width)
+        if (x1 - x0 > TOL) {
+          const s = { x: x0, y }
+          const e = { x: x1, y }
+          segMap.set(getSegmentKey(s, e), { start: s, end: e })
+        }
       }
     }
-    // Vertical segment
-    else if (Math.abs(startX - endX) < tol) {
-      if (Math.abs(startX - 0) < tol || Math.abs(startX - cW) < tol) {
-        return true;
-      }
-    }
-    return false;
   }
 
-  mergedRectGroups.forEach(group => {
-    const segmentCountMap = new Map<string, { segmentData: { start: Point; end: Point }; count: number }>()
-
-    group.forEach(rect => {
-      const { x, y, width, height } = rect
-      const p1 = { x, y } // Top-left
-      const p2 = { x: x + width, y } // Top-right
-      const p3 = { x: x + width, y: y + height } // Bottom-right
-      const p4 = { x, y: y + height } // Bottom-left
-
-      const segments = [
-        { start: p1, end: p2 }, // Top
-        { start: p2, end: p3 }, // Right
-        { start: p3, end: p4 }, // Bottom
-        { start: p4, end: p1 }, // Left
-      ]
-
-      segments.forEach(seg => {
-        // Skip zero-length segments (can happen with zero width/height rects)
-        if (pointsEqual(seg.start, seg.end)) return;
-
-        const key = getSegmentKey(seg.start, seg.end)
-        const existing = segmentCountMap.get(key)
-        if (existing) {
-          existing.count++
-        } else {
-          segmentCountMap.set(key, { segmentData: seg, count: 1 })
-        }
-      })
-    })
-
-    segmentCountMap.forEach(entry => {
-      if (entry.count === 1) { // External segment for this group
-        if (!isOnGlobalBorder(entry.segmentData.start, entry.segmentData.end, containerWidth, containerHeight, POINT_COMPARISON_TOLERANCE)) {
-          outlineLines.push({
-            id: `outline-${outlineLineId++}`,
-            start: entry.segmentData.start,
-            end: entry.segmentData.end,
-          })
-        }
-      }
+  // Convert map → outlineLines array
+  segMap.forEach(({ start, end }) => {
+    outlineLines.push({
+      id: `outline-${outlineLineId++}`,
+      start,
+      end,
     })
   })
-
 
   return {
     midlines,
