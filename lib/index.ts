@@ -31,7 +31,7 @@ import type { CellContent, Line } from "./types"
  * add duplicate segments, but add each segment to the output.
  *
  */
-export const calculateCellBoundaries = (
+export const calculateCellBoundariesDebug = (
   inputCellContents: Omit<CellContent, "cellId">[],
 ): {
   // Add any intermediate outputs here that we might want to visualize
@@ -48,4 +48,11 @@ export const calculateCellBoundaries = (
   }))
 
   throw new Error("Not implemented")
+}
+
+export const calculateCellBoundaries = (
+  inputCellContents: Omit<CellContent, "cellId">[],
+) => {
+  const { cellBoundaries } = calculateCellBoundariesDebug(inputCellContents)
+  return cellBoundaries
 }
