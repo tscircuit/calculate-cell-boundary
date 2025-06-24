@@ -479,6 +479,8 @@ const CellBoundariesVisualization = () => {
     { x: 300, y: 150, width: 100, height: 100 },
     { x: 150, y: 300, width: 140, height: 90 }
   ]);
+  const [draggingCellIndex, setDraggingCellIndex] = useState<number | null>(null);
+  const [dragStartOffset, setDragStartOffset] = useState<Point | null>(null);
 
   const [showStep, setShowStep] = useState('final');
   const [nextId, setNextId] = useState(4);
@@ -527,6 +529,61 @@ const CellBoundariesVisualization = () => {
     };
     setCellContents(prev => [...prev, newCell]);
     setNextId(prev => prev + 1);
+  };
+
+  const handleCellMouseDown = (index: number, event: React.MouseEvent) => {
+    event.preventDefault();
+    const cellElement = event.currentTarget as HTMLElement;
+    const containerElement = cellElement.offsetParent as HTMLElement;
+
+    if (!containerElement) {
+      console.error("Draggable item's container not found. Cannot start drag.");
+      return;
+    }
+
+    const containerRect = containerElement.getBoundingClientRect();
+    const cell = cellContents[index]; // cell is {x, y, width, height} relative to container
+
+    setDraggingCellIndex(index);
+    setDragStartOffset({
+      x: (event.clientX - containerRect.left) - cell.x,
+      y: (event.clientY - containerRect.top) - cell.y,
+    });
+    document.body.style.cursor = 'grabbing';
+  };
+
+  const handleContainerMouseMove = (event: React.MouseEvent) => {
+    if (draggingCellIndex === null || !dragStartOffset) return;
+    event.preventDefault();
+
+    const containerRect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    
+    let newX = event.clientX - dragStartOffset.x - containerRect.left;
+    let newY = event.clientY - dragStartOffset.y - containerRect.top;
+
+    newX = snapToGrid(newX);
+    newY = snapToGrid(newY);
+    
+    // Prevent dragging outside container boundaries (optional, adjust as needed)
+    // newX = Math.max(0, Math.min(newX, 800 - cellContents[draggingCellIndex].width));
+    // newY = Math.max(0, Math.min(newY, 600 - cellContents[draggingCellIndex].height));
+
+
+    setCellContents(prev =>
+      prev.map((cell, index) =>
+        index === draggingCellIndex
+          ? { ...cell, x: newX, y: newY }
+          : cell
+      )
+    );
+  };
+
+  const handleContainerMouseUp = () => {
+    if (draggingCellIndex !== null) {
+      setDraggingCellIndex(null);
+      setDragStartOffset(null);
+      document.body.style.cursor = 'default';
+    }
   };
 
   const colors = ['bg-blue-500', 'bg-red-500', 'bg-green-500', 'bg-purple-500', 'bg-yellow-500', 'bg-pink-500'];
@@ -603,9 +660,12 @@ const CellBoundariesVisualization = () => {
       </div>
 
       <div className="flex gap-6">
-        <div 
+        <div
           className="relative bg-white border-2 border-gray-300"
           style={{ width: '800px', height: '600px' }}
+          onMouseMove={handleContainerMouseMove}
+          onMouseUp={handleContainerMouseUp}
+          onMouseLeave={handleContainerMouseUp} // Stop dragging if mouse leaves container
         >
           {/* Grid pattern */}
           <svg 
@@ -916,13 +976,15 @@ const CellBoundariesVisualization = () => {
           {cellContents.map((cell, index) => (
             <div
               key={index}
-              className={`absolute ${colors[index % colors.length]} rounded-lg shadow-lg border-2 border-white flex items-center justify-center text-white font-bold text-lg opacity-80`}
+              className={`absolute ${colors[index % colors.length]} rounded-lg shadow-lg border-2 border-white flex items-center justify-center text-white font-bold text-lg opacity-80 ${draggingCellIndex === null ? 'cursor-grab' : (draggingCellIndex === index ? 'cursor-grabbing' : 'cursor-default')}`}
               style={{
                 left: `${cell.x}px`,
                 top: `${cell.y}px`,
                 width: `${cell.width}px`,
                 height: `${cell.height}px`,
+                userSelect: 'none', // Prevent text selection during drag
               }}
+              onMouseDown={(e) => handleCellMouseDown(index, e)}
             >
               {index + 1}
             </div>
