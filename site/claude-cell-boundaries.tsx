@@ -245,7 +245,7 @@ const getAngle = (p1: Point, p2: Point): number => {
 const edgeToEdgeDistance = (a: CellContent, b: CellContent) => {
   const dx = Math.max(a.x - (b.x + b.width), b.x - (a.x + a.width), 0)
   const dy = Math.max(a.y - (b.y + b.height), b.y - (a.y + a.height), 0)
-  return Math.hypot(dx, dy)
+  return dx + dy // Manhattan distance
 }
 
 const areAdjacent = (a: CellContent, b: CellContent, tol = 0.5) => {
@@ -435,10 +435,10 @@ export const calculateCellBoundaries = (
 
   cellContents.forEach((cell, idx) => {
     // left / right grid lines that bound the cell
-    const left  = xs.filter((v) => v <= cell.x).pop()!
+    const left = xs.filter((v) => v <= cell.x).pop()!
     const right = xs.find((v) => v >= cell.x + cell.width)!
-    const top   = ys.filter((v) => v <= cell.y).pop()!
-    const bot   = ys.find((v) => v >= cell.y + cell.height)!
+    const top = ys.filter((v) => v <= cell.y).pop()!
+    const bot = ys.find((v) => v >= cell.y + cell.height)!
 
     const rect: CellContent = {
       cellId: `contain-${cell.cellId}`,
@@ -490,7 +490,9 @@ export const calculateCellBoundaries = (
   // add the containing rects to the grid set
   cellContainingRects.forEach((r) => {
     const key = `${r.x},${r.y},${r.width},${r.height}`
-    if (!gridRects.some((g) => `${g.x},${g.y},${g.width},${g.height}` === key)) {
+    if (
+      !gridRects.some((g) => `${g.x},${g.y},${g.width},${g.height}` === key)
+    ) {
       gridRects.push(r)
     }
   })
@@ -542,7 +544,28 @@ export const calculateCellBoundaries = (
     )
     if (neighbours.length) {
       rect.merged = true
-      rect.groupId = neighbours[0].groupId
+      if (neighbours.length === 1) {
+        rect.groupId = neighbours[0].groupId
+      } else {
+        let bestGroupId = null
+        let minDistance = Infinity
+        for (const neighbour of neighbours) {
+          if (neighbour.groupId === null) continue // Should not happen for merged rects
+
+          // Get the original cell associated with this neighbour's group
+          const originalCellForNeighbourGroup = cellContents[neighbour.groupId]
+          const distance = edgeToEdgeDistance(
+            rect,
+            originalCellForNeighbourGroup,
+          )
+
+          if (distance < minDistance) {
+            minDistance = distance
+            bestGroupId = neighbour.groupId
+          }
+        }
+        rect.groupId = bestGroupId
+      }
     }
   })
 
@@ -553,8 +576,12 @@ export const calculateCellBoundaries = (
     const groupRects = workRects
       .filter((r) => r.merged && r.groupId === idx)
       .map(({ merged, groupId, ...plain }) => plain) // strip helper props
-    const cellRect = cellContents[idx]                // original cell rect
-    mergedRectGroups.push([contRect, cellRect, ...groupRects.filter((r) => r.cellId !== contRect.cellId)])
+    const cellRect = cellContents[idx] // original cell rect
+    mergedRectGroups.push([
+      contRect,
+      cellRect,
+      ...groupRects.filter((r) => r.cellId !== contRect.cellId),
+    ])
   })
 
   return {
@@ -569,7 +596,7 @@ export const calculateCellBoundaries = (
   }
 }
 
-const RECT_STAGE_ID = "rects"            // new step-id for pre-merge rects
+const RECT_STAGE_ID = "rects" // new step-id for pre-merge rects
 
 const CellBoundariesVisualization = () => {
   const [cellContents, setCellContents] = useState([
@@ -587,7 +614,7 @@ const CellBoundariesVisualization = () => {
   const mergedRectGroupColors = [
     "bg-orange-500",
     "bg-cyan-600",
-    "bg-sky-600",
+    "bg-red-600",
     "bg-indigo-600",
     "bg-violet-600",
     "bg-fuchsia-600",
@@ -1075,7 +1102,8 @@ const CellBoundariesVisualization = () => {
               <strong>Valid Segments:</strong> {results.validSegments.length}
             </div>
             <div>
-              <strong>Pre-merge Rects (Stage 5):</strong> {results.gridRects.length}
+              <strong>Pre-merge Rects (Stage 5):</strong>{" "}
+              {results.gridRects.length}
             </div>
             <div>
               <strong>Merged Rect Groups (Stage 6):</strong>{" "}
