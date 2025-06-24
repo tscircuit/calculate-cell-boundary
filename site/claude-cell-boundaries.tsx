@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from "react"
+import { computeBoundsFromCellContents } from "./computeBoundsFromCellContents"
 
 // Type definitions
 interface CellContent {
@@ -239,18 +240,18 @@ const pointToKey = (p: Point): string => `${p.x.toFixed(4)},${p.y.toFixed(4)}`
 // Helper function to create a canonical key for a segment
 const getSegmentKey = (p1: Point, p2: Point): string => {
   // Use toFixed to handle potential floating point inaccuracies in keys
-  const p1x = parseFloat(p1.x.toFixed(4));
-  const p1y = parseFloat(p1.y.toFixed(4));
-  const p2x = parseFloat(p2.x.toFixed(4));
-  const p2y = parseFloat(p2.y.toFixed(4));
+  const p1x = parseFloat(p1.x.toFixed(4))
+  const p1y = parseFloat(p1.y.toFixed(4))
+  const p2x = parseFloat(p2.x.toFixed(4))
+  const p2y = parseFloat(p2.y.toFixed(4))
 
   // Sort points by x, then y to ensure (A,B) and (B,A) have the same key
   if (p1x < p2x || (p1x === p2x && p1y < p2y)) {
-    return `${p1x},${p1y}_${p2x},${p2y}`;
+    return `${p1x},${p1y}_${p2x},${p2y}`
   } else {
-    return `${p2x},${p2y}_${p1x},${p1y}`;
+    return `${p2x},${p2y}_${p1x},${p1y}`
   }
-};
+}
 
 const getAngle = (p1: Point, p2: Point): number => {
   return Math.atan2(p2.y - p1.y, p2.x - p1.x)
@@ -297,8 +298,8 @@ class DSU {
 
 export const calculateCellBoundaries = (
   inputCellContents: Omit<CellContent, "cellId">[],
-  containerWidth: number = 800,
-  containerHeight: number = 600,
+  containerWidth?: number,
+  containerHeight?: number,
 ): {
   midlines: Midline[]
   allSegments: Array<Line>
@@ -314,6 +315,16 @@ export const calculateCellBoundaries = (
     ...cellContent,
     cellId: `cell-${index}`,
   }))
+  const containerBounds = computeBoundsFromCellContents(
+    cellContents.map((c) => ({
+      minX: c.x,
+      minY: c.y,
+      maxX: c.x + c.width,
+      maxY: c.y + c.height,
+    })),
+  )
+  containerWidth ??= containerBounds.maxX - containerBounds.minX
+  containerHeight ??= containerBounds.maxY - containerBounds.minY
 
   // Step 1: Calculate midlines between all cells
   const midlines: Midline[] = []
@@ -453,22 +464,22 @@ export const calculateCellBoundaries = (
   cellContents.forEach((cell, idx) => {
     // left / right grid lines that bound the cell
     // xs and ys are sorted and include 0 and containerWidth/Height respectively.
-    const minXGrid = xs[0]; 
-    const maxXGrid = xs[xs.length - 1];
-    const minYGrid = ys[0];
-    const maxYGrid = ys[ys.length - 1];
+    const minXGrid = xs[0]
+    const maxXGrid = xs[xs.length - 1]
+    const minYGrid = ys[0]
+    const maxYGrid = ys[ys.length - 1]
 
-    let left = xs.filter((v) => v <= cell.x).pop();
-    if (left === undefined) left = minXGrid;
+    let left = xs.filter((v) => v <= cell.x).pop()
+    if (left === undefined) left = minXGrid
 
-    let right = xs.find((v) => v >= cell.x + cell.width);
-    if (right === undefined) right = maxXGrid;
+    let right = xs.find((v) => v >= cell.x + cell.width)
+    if (right === undefined) right = maxXGrid
 
-    let top = ys.filter((v) => v <= cell.y).pop();
-    if (top === undefined) top = minYGrid;
+    let top = ys.filter((v) => v <= cell.y).pop()
+    if (top === undefined) top = minYGrid
 
-    let bot = ys.find((v) => v >= cell.y + cell.height);
-    if (bot === undefined) bot = maxYGrid;
+    let bot = ys.find((v) => v >= cell.y + cell.height)
+    if (bot === undefined) bot = maxYGrid
 
     const rect: CellContent = {
       cellId: `contain-${cell.cellId}`,
@@ -543,32 +554,47 @@ export const calculateCellBoundaries = (
     let minDistanceForRect = Infinity
     const { x, y, width, height } = r
 
-    validSegments.forEach(segment => {
+    validSegments.forEach((segment) => {
       const sx1 = Math.min(segment.start.x, segment.end.x)
       const sx2 = Math.max(segment.start.x, segment.end.x)
       const sy1 = Math.min(segment.start.y, segment.end.y)
       const sy2 = Math.max(segment.start.y, segment.end.y)
 
-      const segmentIsHorizontal = Math.abs(segment.start.y - segment.end.y) < POINT_COMPARISON_TOLERANCE
-      const segmentIsVertical = Math.abs(segment.start.x - segment.end.x) < POINT_COMPARISON_TOLERANCE
+      const segmentIsHorizontal =
+        Math.abs(segment.start.y - segment.end.y) < POINT_COMPARISON_TOLERANCE
+      const segmentIsVertical =
+        Math.abs(segment.start.x - segment.end.x) < POINT_COMPARISON_TOLERANCE
 
       let onBoundary = false
       if (segmentIsHorizontal) {
-        if ( (Math.abs(sy1 - y) < POINT_COMPARISON_TOLERANCE || Math.abs(sy1 - (y + height)) < POINT_COMPARISON_TOLERANCE) &&
-             sx1 < x + width - POINT_COMPARISON_TOLERANCE && sx2 > x + POINT_COMPARISON_TOLERANCE && // ensure segment x-range overlaps rect x-range with positive length
-             Math.max(sx1, x) + POINT_COMPARISON_TOLERANCE < Math.min(sx2, x + width) ) {
+        if (
+          (Math.abs(sy1 - y) < POINT_COMPARISON_TOLERANCE ||
+            Math.abs(sy1 - (y + height)) < POINT_COMPARISON_TOLERANCE) &&
+          sx1 < x + width - POINT_COMPARISON_TOLERANCE &&
+          sx2 > x + POINT_COMPARISON_TOLERANCE && // ensure segment x-range overlaps rect x-range with positive length
+          Math.max(sx1, x) + POINT_COMPARISON_TOLERANCE <
+            Math.min(sx2, x + width)
+        ) {
           onBoundary = true
         }
       } else if (segmentIsVertical) {
-        if ( (Math.abs(sx1 - x) < POINT_COMPARISON_TOLERANCE || Math.abs(sx1 - (x + width)) < POINT_COMPARISON_TOLERANCE) &&
-             sy1 < y + height - POINT_COMPARISON_TOLERANCE && sy2 > y + POINT_COMPARISON_TOLERANCE && // ensure segment y-range overlaps rect y-range with positive length
-             Math.max(sy1, y) + POINT_COMPARISON_TOLERANCE < Math.min(sy2, y + height) ) {
+        if (
+          (Math.abs(sx1 - x) < POINT_COMPARISON_TOLERANCE ||
+            Math.abs(sx1 - (x + width)) < POINT_COMPARISON_TOLERANCE) &&
+          sy1 < y + height - POINT_COMPARISON_TOLERANCE &&
+          sy2 > y + POINT_COMPARISON_TOLERANCE && // ensure segment y-range overlaps rect y-range with positive length
+          Math.max(sy1, y) + POINT_COMPARISON_TOLERANCE <
+            Math.min(sy2, y + height)
+        ) {
           onBoundary = true
         }
       }
 
       if (onBoundary && segment.distanceToAnyCell !== undefined) {
-        minDistanceForRect = Math.min(minDistanceForRect, segment.distanceToAnyCell)
+        minDistanceForRect = Math.min(
+          minDistanceForRect,
+          segment.distanceToAnyCell,
+        )
       }
     })
 
@@ -584,7 +610,7 @@ export const calculateCellBoundaries = (
   cellContainingRects.forEach((contRect, idx) => {
     const wr = workRects.find(
       (w) =>
-        pointsEqual({x: w.x, y: w.y}, {x: contRect.x, y: contRect.y}) &&
+        pointsEqual({ x: w.x, y: w.y }, { x: contRect.x, y: contRect.y }) &&
         Math.abs(w.width - contRect.width) < POINT_COMPARISON_TOLERANCE &&
         Math.abs(w.height - contRect.height) < POINT_COMPARISON_TOLERANCE,
     )
@@ -608,16 +634,18 @@ export const calculateCellBoundaries = (
 
     for (const rectToConsider of unmergedRectsProcessingList) {
       // Find the current state of this rect from the main workRects array
-      const currentRectState = workRects.find(wr => wr.cellId === rectToConsider.cellId)
-      
+      const currentRectState = workRects.find(
+        (wr) => wr.cellId === rectToConsider.cellId,
+      )
+
       // If rect somehow already processed or not found, skip
       if (!currentRectState || currentRectState.merged) {
         if (currentRectState && currentRectState.merged && !keepProcessing) {
-            // If it got merged by another rect earlier in this same pass, ensure keepProcessing is true
-            // This can happen if rect A merges, then rect B (neighbour of A) is processed.
-            // However, the main check for keepProcessing is if a rect *changes* its state to merged.
+          // If it got merged by another rect earlier in this same pass, ensure keepProcessing is true
+          // This can happen if rect A merges, then rect B (neighbour of A) is processed.
+          // However, the main check for keepProcessing is if a rect *changes* its state to merged.
         }
-        continue;
+        continue
       }
 
       const neighbours = workRects.filter(
@@ -635,17 +663,23 @@ export const calculateCellBoundaries = (
           let bestGroupId = null
           let minDistanceToOriginalCell = Infinity
           for (const neighbour of neighbours) {
-            if (neighbour.groupId === null) continue 
+            if (neighbour.groupId === null) continue
 
             const originalCellForGroup = cellContents[neighbour.groupId]
-            const distance = edgeToEdgeDistance(currentRectState, originalCellForGroup)
+            const distance = edgeToEdgeDistance(
+              currentRectState,
+              originalCellForGroup,
+            )
 
             if (distance < minDistanceToOriginalCell) {
               minDistanceToOriginalCell = distance
               bestGroupId = neighbour.groupId
             } else if (distance === minDistanceToOriginalCell) {
               // Further tie-breaking: prefer smaller group ID (arbitrary but consistent)
-              if (bestGroupId === null || (neighbour.groupId !== null && neighbour.groupId < bestGroupId)) {
+              if (
+                bestGroupId === null ||
+                (neighbour.groupId !== null && neighbour.groupId < bestGroupId)
+              ) {
                 bestGroupId = neighbour.groupId
               }
             }
