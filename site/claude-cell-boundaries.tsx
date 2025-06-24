@@ -236,6 +236,22 @@ const findClosestPointOnSegmentToAnyCells = (
 // Precision should be related to POINT_COMPARISON_TOLERANCE
 const pointToKey = (p: Point): string => `${p.x.toFixed(4)},${p.y.toFixed(4)}`
 
+// Helper function to create a canonical key for a segment
+const getSegmentKey = (p1: Point, p2: Point): string => {
+  // Use toFixed to handle potential floating point inaccuracies in keys
+  const p1x = parseFloat(p1.x.toFixed(4));
+  const p1y = parseFloat(p1.y.toFixed(4));
+  const p2x = parseFloat(p2.x.toFixed(4));
+  const p2y = parseFloat(p2.y.toFixed(4));
+
+  // Sort points by x, then y to ensure (A,B) and (B,A) have the same key
+  if (p1x < p2x || (p1x === p2x && p1y < p2y)) {
+    return `${p1x},${p1y}_${p2x},${p2y}`;
+  } else {
+    return `${p2x},${p2y}_${p1x},${p1y}`;
+  }
+};
+
 const getAngle = (p1: Point, p2: Point): number => {
   return Math.atan2(p2.y - p1.y, p2.x - p1.x)
 }
@@ -290,6 +306,7 @@ export const calculateCellBoundaries = (
   mergedRectGroups: CellContent[][]
   cellRects: CellContent[]
   gridRects: CellContent[]
+  outlineLines: Line[]
   // polygons: Array<PolygonType>; // Removed
   // mergedPolygons: Array<PolygonType>; // Removed
 } => {
@@ -648,6 +665,76 @@ export const calculateCellBoundaries = (
     ])
   })
 
+  // Step 6: Calculate outline lines for merged groups
+  const outlineLines: Line[] = []
+  let outlineLineId = 0
+
+  const isOnGlobalBorder = (start: Point, end: Point, cW: number, cH: number, tol: number): boolean => {
+    const startX = parseFloat(start.x.toFixed(4));
+    const startY = parseFloat(start.y.toFixed(4));
+    const endX = parseFloat(end.x.toFixed(4));
+    const endY = parseFloat(end.y.toFixed(4));
+    
+    // Horizontal segment
+    if (Math.abs(startY - endY) < tol) {
+      if (Math.abs(startY - 0) < tol || Math.abs(startY - cH) < tol) {
+        return true;
+      }
+    }
+    // Vertical segment
+    else if (Math.abs(startX - endX) < tol) {
+      if (Math.abs(startX - 0) < tol || Math.abs(startX - cW) < tol) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  mergedRectGroups.forEach(group => {
+    const segmentCountMap = new Map<string, { segmentData: { start: Point; end: Point }; count: number }>()
+
+    group.forEach(rect => {
+      const { x, y, width, height } = rect
+      const p1 = { x, y } // Top-left
+      const p2 = { x: x + width, y } // Top-right
+      const p3 = { x: x + width, y: y + height } // Bottom-right
+      const p4 = { x, y: y + height } // Bottom-left
+
+      const segments = [
+        { start: p1, end: p2 }, // Top
+        { start: p2, end: p3 }, // Right
+        { start: p3, end: p4 }, // Bottom
+        { start: p4, end: p1 }, // Left
+      ]
+
+      segments.forEach(seg => {
+        // Skip zero-length segments (can happen with zero width/height rects)
+        if (pointsEqual(seg.start, seg.end)) return;
+
+        const key = getSegmentKey(seg.start, seg.end)
+        const existing = segmentCountMap.get(key)
+        if (existing) {
+          existing.count++
+        } else {
+          segmentCountMap.set(key, { segmentData: seg, count: 1 })
+        }
+      })
+    })
+
+    segmentCountMap.forEach(entry => {
+      if (entry.count === 1) { // External segment for this group
+        if (!isOnGlobalBorder(entry.segmentData.start, entry.segmentData.end, containerWidth, containerHeight, POINT_COMPARISON_TOLERANCE)) {
+          outlineLines.push({
+            id: `outline-${outlineLineId++}`,
+            start: entry.segmentData.start,
+            end: entry.segmentData.end,
+          })
+        }
+      }
+    })
+  })
+
+
   return {
     midlines,
     allSegments,
@@ -655,12 +742,14 @@ export const calculateCellBoundaries = (
     mergedRectGroups,
     cellRects: cellContents,
     gridRects,
+    outlineLines,
     // polygons: [], // Removed
     // mergedPolygons: [], // Removed
   }
 }
 
 const RECT_STAGE_ID = "rects" // new step-id for pre-merge rects
+const OUTLINE_STAGE_ID = "outlines" // new step-id for final outlines
 
 const CellBoundariesVisualization = () => {
   const [cellContents, setCellContents] = useState([
@@ -870,6 +959,7 @@ const CellBoundariesVisualization = () => {
             </option>
             <option value={RECT_STAGE_ID}>5. Rects (pre-merge)</option>
             <option value="mergedRects">6. Merged Rects</option>
+            <option value={OUTLINE_STAGE_ID}>7. Draw Outlines</option>
             {/* <option value="final">5. Constructed Polygons</option> // Removed */}
             {/* <option value="merged">6. Merged Polygons</option> // Removed */}
           </select>
@@ -1073,6 +1163,21 @@ const CellBoundariesVisualization = () => {
               })}
 
             {/* Polygon rendering removed */}
+
+            {/* Outlines of Merged Rects */}
+            {showStep === OUTLINE_STAGE_ID &&
+              results.outlineLines.map((line) => (
+                <line
+                  key={line.id}
+                  x1={line.start.x}
+                  y1={line.start.y}
+                  x2={line.end.x}
+                  y2={line.end.y}
+                  stroke="purple"
+                  strokeWidth="3"
+                  opacity="0.9"
+                />
+              ))}
           </svg>
 
           {/* ── NEW STAGE 5: SHOW EVERY RECT ───────────────────────────── */}
@@ -1172,7 +1277,11 @@ const CellBoundariesVisualization = () => {
             <div>
               <strong>Merged Rect Groups (Stage 6):</strong>{" "}
               {results.mergedRectGroups?.length || 0}
-              <pre>{JSON.stringify(results.mergedRectGroups, null, 2)}</pre>
+              {/* <pre>{JSON.stringify(results.mergedRectGroups, null, 2)}</pre> */}
+            </div>
+            <div>
+              <strong>Outline Lines (Stage 7):</strong>{" "}
+              {results.outlineLines?.length || 0}
             </div>
             {/* Polygon counts removed */}
           </div>
@@ -1191,7 +1300,9 @@ const CellBoundariesVisualization = () => {
               {showStep === RECT_STAGE_ID &&
                 "Stage 5: All individual rects prior to any merging. Each rect has its own colour."}
               {showStep === "mergedRects" &&
-                "Stage 6: Merged Rects. Displays groups of cells that are considered merged. Rects in the same group share a color. Currently, each cell forms its own group as a placeholder for more complex merging logic."}
+                "Stage 6: Merged Rects. Displays groups of cells that are considered merged. Rects in the same group share a color."}
+              {showStep === OUTLINE_STAGE_ID &&
+                "Stage 7: Draw Outlines. External boundaries of the merged rectangle groups, excluding lines on the global container border."}
               {/* Polygon step descriptions removed */}
               {showDistanceDebug &&
                 (showStep === "allSegments" ||
