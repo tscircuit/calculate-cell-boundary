@@ -21,13 +21,28 @@ const scene = {
 test("test05", () => {
   const boundaries = calculateCellBoundaries(scene.cellContents)
 
+  expect(boundaries).toMatchInlineSnapshot(`
+    [
+      {
+        "end": {
+          "x": 150,
+          "y": 175,
+        },
+        "start": {
+          "x": 150,
+          "y": 0,
+        },
+      },
+    ]
+  `)
+
   expect(boundaries).toEqual([
     {
-      start: {
+      end: {
         x: 150,
         y: 0,
       },
-      end: {
+      start: {
         x: 150,
         y: 300,
       },

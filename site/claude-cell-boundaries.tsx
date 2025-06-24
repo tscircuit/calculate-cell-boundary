@@ -323,8 +323,10 @@ export const calculateCellBoundaries = (
       maxY: c.y + c.height,
     })),
   )
-  containerWidth ??= containerBounds.maxX - containerBounds.minX
-  containerHeight ??= containerBounds.maxY - containerBounds.minY
+  // TODO handle container offset
+  containerWidth ??= containerBounds.maxX // - containerBounds.minX
+  containerHeight ??= containerBounds.maxY // - containerBounds.minY
+  console.log({ containerWidth, containerHeight })
 
   // Step 1: Calculate midlines between all cells
   const midlines: Midline[] = []
