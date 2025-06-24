@@ -44,7 +44,7 @@ const App: React.FC = () => {
     setCellContentsJsonInput(JSON.stringify(cellContents, null, 2))
 
     // Also, recalculate and update boundaries.
-    const boundaries = calculateCellBoundaries(cellContents).cellBoundaries
+    const boundaries = calculateCellBoundaries(cellContents)
     setCalculatedBoundaries(boundaries)
     setBoundariesJsonOutput(JSON.stringify(boundaries, null, 2))
   }, [cellContents])
