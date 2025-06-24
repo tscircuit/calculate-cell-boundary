@@ -596,6 +596,8 @@ const calculateMergedPolygons = (
     sourceSegmentMap.set(getCanonicalSegmentKey(seg.start, seg.end), seg);
   });
 
+  const consumedOriginalSegmentsForMerging = new Set<string>();
+
   let mergedInLastPass: boolean;
   do {
     mergedInLastPass = false;
@@ -630,6 +632,11 @@ const calculateMergedPolygons = (
     candidateMerges.sort((a, b) => (a.segment.distanceToAnyCell || 0) - (b.segment.distanceToAnyCell || 0));
 
     for (const { segment: sharedSeg, poly1: poly1ObjToMerge, poly2: poly2ObjToMerge } of candidateMerges) {
+      const sharedSegKey = getCanonicalSegmentKey(sharedSeg.start, sharedSeg.end);
+      if (consumedOriginalSegmentsForMerging.has(sharedSegKey)) {
+        continue; // This segment has already been consumed by a successful merge
+      }
+
       const p1CurrentInstance = currentPolygonObjects.find(p => p.id === poly1ObjToMerge.id);
       const p2CurrentInstance = currentPolygonObjects.find(p => p.id === poly2ObjToMerge.id);
 
@@ -680,6 +687,7 @@ const calculateMergedPolygons = (
         currentPolygonObjects = currentPolygonObjects.filter(p => p.id !== p1CurrentInstance.id && p.id !== p2CurrentInstance.id);
         currentPolygonObjects.push(newPolygonObject);
         
+        consumedOriginalSegmentsForMerging.add(sharedSegKey); // Mark segment as consumed
         mergedInLastPass = true;
         break; // Restart the pass: re-calculate shared segments, re-sort, re-iterate
       }
