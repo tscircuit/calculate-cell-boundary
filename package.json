@@ -1,8 +1,12 @@
 {
   "name": "calculate-cell-boundaries",
-  "module": "index.ts",
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
   "type": "module",
   "scripts": {
+    "build:lib": "tsdown --dts lib/index.ts --outdir dist",
     "build:site": "bun build site/index.html --outdir site-build",
     "vercel-build": "bun run build:site",
     "start1": "bun run site/index.html",
@@ -20,7 +24,8 @@
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "bun-match-svg": "^0.0.11",
-    "graphics-debug": "^0.0.46"
+    "graphics-debug": "^0.0.46",
+    "tsdown": "^0.12.9"
   },
   "peerDependencies": {
     "typescript": "^5"

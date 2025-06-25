@@ -1,4 +1,4 @@
-import type { CellContent } from "lib/types"
+import type { CellContent } from "./types"
 
 export const computeBoundsFromCellContents = (
   cellContents: Omit<CellContent, "cellId">[],

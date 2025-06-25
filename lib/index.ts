@@ -1,6 +1,7 @@
 import type { CellContent, Line, Vec2 } from "./types"
-import { calculateCellBoundaries as calculateCellBoundariesDebug } from "../site/claude-cell-boundaries"
+import { calculateCellBoundaries as calculateCellBoundariesDebug } from "./calculateCellBoundaries"
 import { mergeAlignedSegments } from "./mergeAlignedSegments"
+export { computeBoundsFromCellContents } from "./computeBoundsFromCellContents"
 
 const pointSortKey = (A: Vec2, B: Vec2) => {
   if (A.x !== B.x) {
