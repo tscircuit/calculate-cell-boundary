@@ -1,8 +1,12 @@
 {
   "name": "calculate-cell-boundaries",
-  "module": "index.ts",
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
   "type": "module",
   "scripts": {
+    "build:lib": "tsdown --dts lib/index.ts --outdir dist",
     "build:site": "bun build site/index.html --outdir site-build",
     "vercel-build": "bun run build:site",
     "start1": "bun run site/index.html",
